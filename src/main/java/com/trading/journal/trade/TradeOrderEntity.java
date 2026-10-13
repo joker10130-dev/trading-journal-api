@@ -59,6 +59,7 @@ public class TradeOrderEntity {
 	private BigDecimal volume;
 
 	@Column(name = "update_time_server")
+	@JdbcTypeCode(SqlTypes.LOCAL_DATE_TIME)
 	private LocalDateTime updateTimeServer;
 
 	@Column(name = "updated_at")

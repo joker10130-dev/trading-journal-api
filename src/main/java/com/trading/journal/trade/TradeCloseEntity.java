@@ -47,6 +47,7 @@ public class TradeCloseEntity {
 	private BigDecimal volume;
 
 	@Column(name = "close_time_server")
+	@JdbcTypeCode(SqlTypes.LOCAL_DATE_TIME)
 	private LocalDateTime closeTimeServer;
 
 	@Column(name = "closed_at")

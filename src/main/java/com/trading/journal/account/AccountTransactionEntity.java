@@ -43,6 +43,7 @@ public class AccountTransactionEntity {
 	private String transactionType;
 
 	@Column(name = "occurred_at_server")
+	@JdbcTypeCode(SqlTypes.LOCAL_DATE_TIME)
 	private LocalDateTime occurredAtServer;
 
 	@Column(nullable = false, precision = 18, scale = 5)

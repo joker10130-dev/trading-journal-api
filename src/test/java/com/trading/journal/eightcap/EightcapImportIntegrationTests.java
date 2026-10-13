@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import com.trading.journal.TestcontainersConfiguration;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -293,6 +294,99 @@ class EightcapImportIntegrationTests {
 						.param("accountIds", Long.toString(accountId))
 						.with(user("other@example.test")))
 				.andExpect(status().isNotFound());
+	}
+
+	@Test
+	void septemberTradesReportDailyPnlUsesThaiDatesForLateServerCloses() throws Exception {
+		long accountId = createAccount("September Thai daily totals", EightcapFixture.LOGIN, USER, (short) 180, null, null);
+		List<List<String>> rows = List.of(
+				septemberTradeRow("SEP-01", "2026-09-01 10:40:00", "-52.52", "0"),
+				septemberTradeRow("SEP-02", "2026-09-04 07:00:01", "-40.04", "0"),
+				septemberTradeRow("SEP-03", "2026-09-04 16:15:55", "-296.08", "0"),
+				septemberTradeRow("SEP-LATE-08", "2026-09-08 21:48:59", "-24.17", "0"),
+				septemberTradeRow("SEP-05", "2026-09-10 11:00:29", "0.75", "0"),
+				septemberTradeRow("SEP-06", "2026-09-10 11:32:19", "-20.68", "0"),
+				septemberTradeRow("SEP-07", "2026-09-10 13:34:07", "-20.00", "0"),
+				septemberTradeRow("SEP-08", "2026-09-10 15:17:00", "-21.04", "0"),
+				septemberTradeRow("SEP-09", "2026-09-10 15:31:05", "-14.30", "0"),
+				septemberTradeRow("SEP-10", "2026-09-10 15:34:38", "-13.15", "0"),
+				septemberTradeRow("SEP-11", "2026-09-14 10:52:32", "8.02", "-0.80"),
+				septemberTradeRow("SEP-12", "2026-09-14 15:36:29", "-30.84", "0"),
+				septemberTradeRow("SEP-LATE-15", "2026-09-15 21:13:40", "30.30", "0"),
+				septemberTradeRow("SEP-14", "2026-09-18 09:08:47", "-29.94", "0"),
+				septemberTradeRow("SEP-LATE-18", "2026-09-18 20:18:11", "12.45", "0"),
+				septemberTradeRow("SEP-16", "2026-09-21 17:03:31", "-39.57", "0"),
+				septemberTradeRow("SEP-LATE-22", "2026-09-22 21:06:17", "21.30", "0"),
+				septemberTradeRow("SEP-18", "2026-09-24 11:18:04", "-20.63", "0"),
+				septemberTradeRow("SEP-19", "2026-09-25 04:21:47", "-20.30", "0"),
+				septemberTradeRow("SEP-20", "2026-09-25 13:08:13", "-20.22", "0"),
+				septemberTradeRow("SEP-21", "2026-09-25 13:14:46", "-20.10", "0"),
+				septemberTradeRow("SEP-22", "2026-09-28 03:31:50", "-36.22", "0"),
+				septemberCashRow("SEP-DEPOSIT", "2026-09-04 15:44:29", "300.00", "DEPOSIT"),
+				septemberCashRow("SEP-CREDIT", "2026-09-11 04:20:07", "217.84", "CREDIT"));
+		byte[] report = EightcapFixture.csvBytes(rows, false);
+		JsonNode preview = preview(accountId, "sanitized-september.csv", report);
+		JsonNode imported = importFile(
+				accountId, "sanitized-september.csv", report, preview.path("fileSha256").asString(), false, 200);
+		org.junit.jupiter.api.Assertions.assertEquals(22, imported.path("importedTradeCloses").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(2, imported.path("importedCashTransactions").asInt());
+
+		MvcResult performanceResult = mockMvc.perform(get("/api/v1/trading-accounts/summary/performance")
+						.param("accountIds", Long.toString(accountId))
+						.with(user(USER)))
+				.andExpect(status().isOk())
+				.andReturn();
+		JsonNode performance = objectMapper.readTree(performanceResult.getResponse().getContentAsByteArray());
+		org.junit.jupiter.api.Assertions.assertEquals(-647.78, performance.path("netPnl").asDouble(), 0.00001);
+		org.junit.jupiter.api.Assertions.assertEquals(-647.78, performance.path("monthly").get(0).path("netPnl").asDouble(), 0.00001);
+		org.junit.jupiter.api.Assertions.assertEquals(22, performance.path("tradeCount").asInt());
+
+		Map<String, Double> expectedThaiDailyPnl = Map.ofEntries(
+				Map.entry("2026-09-01", -52.52),
+				Map.entry("2026-09-04", -336.12),
+				Map.entry("2026-09-09", -24.17),
+				Map.entry("2026-09-10", -88.42),
+				Map.entry("2026-09-14", -23.62),
+				Map.entry("2026-09-16", 30.30),
+				Map.entry("2026-09-18", -29.94),
+				Map.entry("2026-09-19", 12.45),
+				Map.entry("2026-09-21", -39.57),
+				Map.entry("2026-09-23", 21.30),
+				Map.entry("2026-09-24", -20.63),
+				Map.entry("2026-09-25", -60.62),
+				Map.entry("2026-09-28", -36.22));
+		JsonNode daily = performance.path("daily");
+		org.junit.jupiter.api.Assertions.assertEquals(expectedThaiDailyPnl.size(), daily.size());
+		for (JsonNode total : daily) {
+			String date = total.path("date").asString();
+			org.junit.jupiter.api.Assertions.assertTrue(expectedThaiDailyPnl.containsKey(date), date);
+			org.junit.jupiter.api.Assertions.assertEquals(
+					expectedThaiDailyPnl.get(date), total.path("netPnl").asDouble(), 0.00001, date);
+		}
+
+		Map<String, String[]> expectedUtcAndThaiTimes = Map.of(
+				"SEP-LATE-08", new String[] {
+						"2026-09-08 21:48:59", "2026-09-08 18:48:59", "2026-09-09 01:48:59"},
+				"SEP-LATE-15", new String[] {
+						"2026-09-15 21:13:40", "2026-09-15 18:13:40", "2026-09-16 01:13:40"},
+				"SEP-LATE-18", new String[] {
+						"2026-09-18 20:18:11", "2026-09-18 17:18:11", "2026-09-19 00:18:11"},
+				"SEP-LATE-22", new String[] {
+						"2026-09-22 21:06:17", "2026-09-22 18:06:17", "2026-09-23 01:06:17"});
+		expectedUtcAndThaiTimes.forEach((ticket, expected) -> {
+			String[] times = jdbcClient.sql("""
+						select to_char(c.close_time_server, 'YYYY-MM-DD HH24:MI:SS') as server_time,
+						       to_char(c.closed_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS') as utc_time,
+						       to_char(c.closed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI:SS') as thai_time
+						from trade_closes c join trades t on t.id = c.trade_id
+						where t.trading_account_id = ? and t.ticket = ?
+						""")
+					.param(accountId).param(ticket)
+					.query((rs, rowNum) -> new String[] {
+							rs.getString("server_time"), rs.getString("utc_time"), rs.getString("thai_time")})
+					.single();
+			org.junit.jupiter.api.Assertions.assertArrayEquals(expected, times, ticket);
+		});
 	}
 
 	@Test
@@ -641,6 +735,42 @@ private void assertTradingViewImports() throws Exception {
 				profit,
 				"USD",
 				"STOP GTC COMPLETED");
+	}
+
+	private List<String> septemberTradeRow(String ticket, String closeTime, String profit, String swaps) {
+		return List.of(
+				ticket,
+				EightcapFixture.LOGIN,
+				"buy",
+				"XAUUSD",
+				"0.01",
+				swaps,
+				"0",
+				closeTime.substring(0, 10) + " 08:00:00",
+				"4400",
+				closeTime,
+				"4410",
+				profit,
+				"USD",
+				"SANITIZED SEPTEMBER DAILY FIXTURE");
+	}
+
+	private List<String> septemberCashRow(String ticket, String time, String amount, String type) {
+		return List.of(
+				ticket,
+				EightcapFixture.LOGIN,
+				"",
+				"",
+				"",
+				"0",
+				"0",
+				"",
+				"",
+				time,
+				"",
+				amount,
+				"USD",
+				type + " SANITIZED TEST TRANSACTION");
 	}
 
 	private List<String> tradingViewOrder(

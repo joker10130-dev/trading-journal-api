@@ -11,6 +11,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "trades")
@@ -44,6 +46,7 @@ public class TradeEntity {
 	private Instant openedAt;
 
 	@Column(name = "open_time_server")
+	@JdbcTypeCode(SqlTypes.LOCAL_DATE_TIME)
 	private LocalDateTime openTimeServer;
 
 	@Column(name = "open_price", precision = 18, scale = 5)
