@@ -257,14 +257,14 @@ class EightcapImportIntegrationTests {
 						.with(user(USER)))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.netPnl").value(-647.78))
-				.andExpect(jsonPath("$.totalR").value(-64.778))
+				.andExpect(jsonPath("$.totalR").value(0))
 				.andExpect(jsonPath("$.tradeCount").value(22))
-				.andExpect(jsonPath("$.tradesWithR").value(22))
-				.andExpect(jsonPath("$.tradesWithoutR").value(0))
+				.andExpect(jsonPath("$.tradesWithR").value(0))
+				.andExpect(jsonPath("$.tradesWithoutR").value(22))
 				.andExpect(jsonPath("$.monthly.length()").value(1))
 				.andExpect(jsonPath("$.monthly[0].month").value("2026-09-01"))
 				.andExpect(jsonPath("$.monthly[0].netPnl").value(-647.78))
-				.andExpect(jsonPath("$.monthly[0].totalR").value(-64.778))
+				.andExpect(jsonPath("$.monthly[0].totalR").value(0))
 				.andExpect(jsonPath("$.daily.length()").value(22))
 				.andExpect(jsonPath("$.daily[0].date").value("2026-09-01"));
 
@@ -276,21 +276,181 @@ class EightcapImportIntegrationTests {
 	}
 
 	@Test
-	void derivesRiskFromLinkedStopAndFallsBackWhenStopMayHaveMoved() throws Exception {
-		long stopAccount = createAccount(
-				"Stop risk", EightcapFixture.LOGIN, USER, (short) 180, "FIXED_STOP_DISTANCE", new BigDecimal("5"));
-		long movedAccount = createAccount(
-				"Moved stop risk", EightcapFixture.LOGIN, USER, (short) 180, "FIXED_AMOUNT", new BigDecimal("5"));
-
-		importStopRiskScenario(stopAccount, "701", "95");
-		assertRisk(stopAccount, "701", "SL_ORDER", "10.00000", "2.00000000", null);
-		assertRisk(stopAccount, "702", "ACCOUNT_RULE", "10.00000", "0.00000000", null);
-
-		importStopRiskScenario(movedAccount, "703", "105");
-		assertRisk(movedAccount, "703", "ACCOUNT_RULE", "5.00000", "4.00000000", "SL_MAY_HAVE_MOVED");
+	void btcAutoRUsesTheOnlyStop() throws Exception {
+		long accountId = createAccount("Auto R BTC", EightcapFixture.LOGIN);
+		importTradingViewRows(accountId, btcPosition(
+				stop("BTCUSD", "1250803570", "82400", "BTCUSD:1250803562")));
+		assertTradeR(accountId, "1250803562", "AUTO", "2.00000000", null);
 	}
 
-	private void assertTradingViewImports() throws Exception {
+	@Test
+	void autoRUsesTheFirstStopWhenTheStopWasMoved() throws Exception {
+		long accountId = createAccount("Auto R moved stop", EightcapFixture.LOGIN);
+		importTradingViewRows(accountId, btcPosition(
+				stop("BTCUSD", "1250803561", "80000", "BTCUSD:1250803562"),
+				stop("BTCUSD", "1250803580", "82600", "BTCUSD:1250803562"),
+				stop("BTCUSD", "1250803570", "82400", "BTCUSD:1250803562"),
+				stop("BTCUSD", "1250803590", "82700", "BTCUSD:1250803562")));
+		assertTradeR(accountId, "1250803562", "AUTO", "2.00000000", null);
+	}
+
+	@Test
+	void missingStopLeavesRNullAndFlagsNoInitialStop() throws Exception {
+		long accountId = createAccount("Auto R no stop", EightcapFixture.LOGIN);
+		importTradingViewRows(accountId, btcPosition());
+		assertTradeR(accountId, "1250803562", "NONE", null, "no initial stop");
+	}
+
+	@Test
+	void secondPositionStopIsNotUsedForFirstPositionOnSameSymbol() throws Exception {
+		long accountId = createAccount("Auto R position boundary", EightcapFixture.LOGIN);
+		List<String> secondPositionStop = new ArrayList<>(stop("BTCUSD", "1201", "82400", ""));
+		secondPositionStop.set(1, "sElL");
+		secondPositionStop.set(2, "sToP");
+		importTradingViewRows(accountId, List.of(
+				tradingViewOrder(
+						"BTCUSD", "Buy", "Limit", "0.02", "0.02", "", "", "82900", "Filled",
+						"2026-10-10 22:00:00", "BTCUSD:1000", "0", "", "", "1000"),
+				tradingViewOrder(
+						"BTCUSD", "Sell", "Market", "0.02", "0.02", "", "", "83400", "Filled",
+						"2026-10-10 22:10:00", "BTCUSD:1000", "0", "10", "10", "1100"),
+				tradingViewOrder(
+						"BTCUSD", "Buy", "Limit", "0.02", "0.02", "", "", "82900", "Filled",
+						"2026-10-10 22:20:00", "BTCUSD:1200", "0", "", "", "1200"),
+				secondPositionStop,
+				tradingViewOrder(
+						"BTCUSD", "Sell", "Market", "0.02", "0.02", "", "", "83400", "Filled",
+						"2026-10-10 22:30:00", "BTCUSD:1200", "0", "20", "20", "1300")));
+
+		assertTradeR(accountId, "1000", "NONE", null, "no initial stop");
+		assertTradeR(accountId, "1200", "AUTO", "2.00000000", null);
+	}
+
+	@Test
+	void cancelledStopWithBlankPositionIdIsLinkedByOrderId() throws Exception {
+		long accountId = createAccount("Auto R blank position", EightcapFixture.LOGIN);
+		importTradingViewRows(accountId, btcPosition(stop("BTCUSD", "1250803570", "82400", "")));
+		assertTradeR(accountId, "1250803562", "AUTO", "2.00000000", null);
+	}
+
+	@Test
+	void unknownContractSizeLeavesRNullAndFlagsIt() throws Exception {
+		long accountId = createAccount("Auto R unknown size", EightcapFixture.LOGIN);
+		importTradingViewRows(accountId, List.of(
+				tradingViewOrder(
+						"EURUSD", "Buy", "Limit", "1", "1", "", "", "1.1000", "Filled",
+						"2026-10-10 22:00:00", "EURUSD:3000", "0", "", "", "3000"),
+				stop("EURUSD", "3001", "1.0900", ""),
+				tradingViewOrder(
+						"EURUSD", "Sell", "Market", "1", "1", "", "", "1.1100", "Filled",
+						"2026-10-10 22:50:00", "EURUSD:3000", "0", "100", "100", "3002")));
+		assertTradeR(accountId, "3000", "NONE", null, "unknown contract size");
+	}
+
+	@Test
+	void xauusdAutoRUsesContractSize100() throws Exception {
+		long accountId = createAccount("Auto R XAUUSD", EightcapFixture.LOGIN);
+		importTradingViewRows(accountId, List.of(
+				tradingViewOrder(
+						"XAUUSD", "Buy", "Market", "0.20", "0.20", "", "", "100", "Filled",
+						"2026-10-10 22:00:00", "XAUUSD:2000", "0", "", "", "2000"),
+				stop("XAUUSD", "2001", "95", "XAUUSD:2000"),
+				tradingViewOrder(
+						"XAUUSD", "Sell", "Market", "0.20", "0.20", "", "", "110", "Filled",
+						"2026-10-10 22:50:00", "XAUUSD:2000", "0", "200", "200", "2002")));
+		assertTradeR(accountId, "2000", "AUTO", "2.00000000", null);
+		org.junit.jupiter.api.Assertions.assertEquals(
+				"100.00000",
+				jdbcClient.sql("select risk_amount from trades where trading_account_id = ? and ticket = '2000'")
+						.param(accountId).query(String.class).single());
+	}
+
+	@Test
+	void tradesReportImportLeavesRNullAndSourceNone() throws Exception {
+		long accountId = createAccount(
+				"Report R none", EightcapFixture.LOGIN, USER, (short) 180, "FIXED_AMOUNT", new BigDecimal("10"));
+		importTradesReportTrade(accountId, "801");
+		assertTradeR(accountId, "801", "NONE", null, null);
+		org.junit.jupiter.api.Assertions.assertNull(closeR(accountId, "801"));
+	}
+
+	@Test
+	void manualRUpdateSetsRAndSourceManual() throws Exception {
+		long accountId = createAccount("Manual R", EightcapFixture.LOGIN);
+		importTradesReportTrade(accountId, "802");
+		long tradeId = jdbcClient.sql("select id from trades where trading_account_id = ? and ticket = '802'")
+				.param(accountId).query(Long.class).single();
+
+		mockMvc.perform(put("/api/v1/trades/{id}/r", tradeId)
+						.with(user(USER))
+						.contentType("application/json")
+						.content("{\"rMultiple\": 1.5}"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.rSource").value("MANUAL"));
+		assertTradeR(accountId, "802", "MANUAL", "1.50000000", null);
+		org.junit.jupiter.api.Assertions.assertEquals("1.50000000", closeR(accountId, "802"));
+
+		createAccount("Other R user", EightcapFixture.LOGIN, "other@example.test");
+		mockMvc.perform(put("/api/v1/trades/{id}/r", tradeId)
+						.with(user("other@example.test"))
+						.contentType("application/json")
+						.content("{\"rMultiple\": 3}"))
+				.andExpect(status().isNotFound());
+	}
+
+	private List<List<String>> btcPosition(List<String>... stops) {
+		List<List<String>> rows = new ArrayList<>();
+		rows.add(tradingViewOrder(
+				"BTCUSD", "Buy", "Limit", "0.02", "0.02", "", "", "82900", "Filled",
+				"2026-10-10 22:00:00", "BTCUSD:1250803562", "0", "", "", "1250803562"));
+		rows.addAll(List.of(stops));
+		rows.add(tradingViewOrder(
+				"BTCUSD", "Sell", "Market", "0.02", "0.02", "", "", "83400", "Filled",
+				"2026-10-10 22:50:00", "BTCUSD:1250803562", "0", "20", "20", "1250803600"));
+		return rows;
+	}
+
+	private List<String> stop(String symbol, String orderId, String stopPrice, String positionId) {
+		return tradingViewOrder(
+				symbol, "Sell", "Stop", "0.02", "", "", stopPrice, "", "Cancelled",
+				"2026-10-10 22:01:00", positionId, "0", "", "", orderId);
+	}
+
+	private void importTradingViewRows(long accountId, List<List<String>> rows) throws Exception {
+		byte[] orders = tradingViewCsv(rows);
+		JsonNode preview = previewTradingView(accountId, "auto-r.csv", orders);
+		importTradingView(accountId, "auto-r.csv", orders, preview.path("fileSha256").asString());
+	}
+
+	private void importTradesReportTrade(long accountId, String ticket) throws Exception {
+		byte[] report = EightcapFixture.csvBytes(List.of(eightcapTradeRow(ticket, "20.00")), false);
+		JsonNode preview = preview(accountId, "report-r.csv", report);
+		importFile(accountId, "report-r.csv", report, preview.path("fileSha256").asString(), false, 200);
+	}
+
+	private String closeR(long accountId, String ticket) {
+		return jdbcClient.sql("""
+						select c.r_multiple
+						from trade_closes c join trades t on t.id = c.trade_id
+						where t.trading_account_id = ? and t.ticket = ?
+						""")
+				.param(accountId).param(ticket)
+				.query((rs, rowNum) -> rs.getString("r_multiple")).list().getFirst();
+	}
+
+	private void assertTradeR(long accountId, String ticket, String source, String r, String flag) {
+		String[] row = jdbcClient.sql("""
+						select r_source, r_multiple, r_flag
+						from trades
+						where trading_account_id = ? and ticket = ?
+						""")
+				.param(accountId).param(ticket)
+				.query((rs, rowNum) -> new String[] {
+						rs.getString("r_source"), rs.getString("r_multiple"), rs.getString("r_flag")})
+				.single();
+		org.junit.jupiter.api.Assertions.assertArrayEquals(new String[] {source, r, flag}, row);
+	}
+private void assertTradingViewImports() throws Exception {
 		long overlapAccount = createAccount("TradingView overlap", EightcapFixture.LOGIN);
 		List<List<String>> commonOrders = new ArrayList<>();
 		for (int i = 0; i < 194; i++) {
@@ -443,62 +603,6 @@ class EightcapImportIntegrationTests {
 						.param("sha256", hash)
 						.with(user(USER)))
 				.andExpect(status().isOk());
-	}
-
-	private void importStopRiskScenario(long accountId, String ticket, String stopPrice) throws Exception {
-		List<List<String>> tradeRows = List.of(
-				eightcapTradeRow(ticket, "20.00"),
-				eightcapTradeRow(Long.toString(Long.parseLong(ticket) + 1), "0.00"));
-		byte[] tradesReport = EightcapFixture.csvBytes(tradeRows, false);
-		JsonNode preview = preview(accountId, "stop-risk.csv", tradesReport);
-		importFile(accountId, "stop-risk.csv", tradesReport, preview.path("fileSha256").asString(), false, 200);
-
-		String positionId = "XAUUSD:" + ticket;
-		List<List<String>> orderRows = List.of(
-				tradingViewOrder(
-						"XAUUSD", "Buy", "Market", "0.20", "0.20", "", "", "100.00", "Filled",
-						"2026-10-01 16:00:00", positionId, "0", "", "", ticket),
-				tradingViewOrder(
-						"XAUUSD", "Sell", "Stop", "0.20", "", "", stopPrice, "", "Cancelled",
-						"2026-10-01 16:01:00", positionId, "0", "", "", ticket + "-sl"));
-		byte[] orders = tradingViewCsv(orderRows);
-		JsonNode tvPreview = previewTradingView(accountId, "stop-orders.csv", orders);
-		importTradingView(accountId, "stop-orders.csv", orders, tvPreview.path("fileSha256").asString());
-	}
-
-	private void assertRisk(
-			long accountId,
-			String ticket,
-			String source,
-			String riskAmount,
-			String rMultiple,
-			String flag) {
-		var risk = jdbcClient.sql("""
-						select risk_source, risk_amount, r_multiple, r_flag
-						from trades
-						where trading_account_id = ? and ticket = ?
-						""")
-				.param(accountId)
-				.param(ticket)
-				.query((rs, rowNum) -> new Object[] {
-						rs.getString("risk_source"),
-						rs.getBigDecimal("risk_amount").toPlainString(),
-						rs.getBigDecimal("r_multiple").toPlainString(),
-						rs.getString("r_flag")
-				})
-				.single();
-		org.junit.jupiter.api.Assertions.assertEquals(source, risk[0]);
-		org.junit.jupiter.api.Assertions.assertEquals(riskAmount, risk[1]);
-		org.junit.jupiter.api.Assertions.assertEquals(rMultiple, risk[2]);
-		org.junit.jupiter.api.Assertions.assertEquals(flag, risk[3]);
-		org.junit.jupiter.api.Assertions.assertEquals(
-				rMultiple,
-				jdbcClient.sql("""
-						select c.r_multiple
-						from trade_closes c join trades t on t.id = c.trade_id
-						where t.trading_account_id = ? and t.ticket = ?
-						""")
-						.param(accountId).param(ticket).query(BigDecimal.class).single().toPlainString());
 	}
 
 	private List<String> eightcapTradeRow(String ticket, String profit) {

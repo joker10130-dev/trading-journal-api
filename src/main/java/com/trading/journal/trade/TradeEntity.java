@@ -67,6 +67,9 @@ public class TradeEntity {
 	@Column(name = "r_flag", length = 32)
 	private String rFlag;
 
+	@Column(name = "r_source", nullable = false, length = 24)
+	private String rSource;
+
 	@Column(name = "gross_pnl", nullable = false, precision = 18, scale = 5)
 	private BigDecimal grossPnl;
 
@@ -116,6 +119,7 @@ public class TradeEntity {
 		this.openPrice = openPrice;
 		this.openedVolume = BigDecimal.ZERO;
 		this.riskSource = "NONE";
+		this.rSource = "NONE";
 		this.grossPnl = BigDecimal.ZERO;
 		this.feesAndSwap = BigDecimal.ZERO;
 		this.netPnl = BigDecimal.ZERO;
@@ -156,12 +160,20 @@ public class TradeEntity {
 			BigDecimal riskAmount,
 			String riskSource,
 			BigDecimal rMultiple,
-			String rFlag) {
+			String rFlag,
+			String rSource) {
 		this.initialSlPrice = initialSlPrice;
 		this.riskAmount = riskAmount;
 		this.riskSource = riskSource;
 		this.rMultiple = rMultiple;
 		this.rFlag = rFlag;
+		this.rSource = rSource;
+	}
+
+	public void applyManualR(BigDecimal rMultiple) {
+		this.rMultiple = rMultiple;
+		this.rFlag = null;
+		this.rSource = "MANUAL";
 	}
 
 	public void replaceWithTradesReport(
