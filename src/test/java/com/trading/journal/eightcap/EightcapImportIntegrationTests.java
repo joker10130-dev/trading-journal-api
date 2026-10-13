@@ -190,6 +190,26 @@ class EightcapImportIntegrationTests {
 	}
 
 	@Test
+	void doesNotWarnWhenReportTicketMatchesStoredTradeOrderId() throws Exception {
+		long accountId = createAccount("Order ID overlap", EightcapFixture.LOGIN);
+		List<List<String>> tradingViewOrders = List.of(
+				tradingViewOrder(
+						"XAUUSD", "Buy", "Market", "0.20", "0.20", "", "", "100.00", "Filled",
+						"2026-10-01 16:00:00", "XAUUSD:9001", "0", "", "", "9001"),
+				tradingViewOrder(
+						"XAUUSD", "Sell", "Market", "0.20", "0.20", "", "", "110.00", "Filled",
+						"2026-10-01 16:01:00", "XAUUSD:9001", "0", "20.00", "20.00", "9002"));
+		importTradingViewRows(accountId, tradingViewOrders);
+
+		byte[] report = EightcapFixture.csvBytes(List.of(eightcapTradeRow("9002", "20.00")), false);
+		JsonNode preview = preview(accountId, "matching-order-id.csv", report);
+		assertNoWarnings(preview);
+		JsonNode result = importFile(
+				accountId, "matching-order-id.csv", report, preview.path("fileSha256").asString(), false, 200);
+		assertNoWarnings(result);
+	}
+
+	@Test
 	void doesNotWarnWhenImportedTradesPartiallyOverlapExistingTrades() throws Exception {
 		long accountId = createAccount("Partial overlap", EightcapFixture.LOGIN);
 		byte[] existingReport = EightcapFixture.csvBytes(reportRows("EXISTING-2"), false);
