@@ -11,6 +11,8 @@ public interface TradeRepository extends JpaRepository<TradeEntity, Long> {
 
 	List<TradeEntity> findAllByTradingAccountIdAndTicketIn(Long tradingAccountId, Collection<String> tickets);
 
+	Optional<TradeEntity> findByIdAndUserId(Long id, Long userId);
+
 	List<TradeEntity> findAllByTradingAccountId(Long tradingAccountId);
 
 	boolean existsByTradingAccountId(Long tradingAccountId);
