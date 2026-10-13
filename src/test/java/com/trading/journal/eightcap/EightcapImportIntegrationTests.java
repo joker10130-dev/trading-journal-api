@@ -169,6 +169,70 @@ class EightcapImportIntegrationTests {
 	}
 
 	@Test
+	void warnsWhenImportedTradesHaveNoOverlapWithExistingTrades() throws Exception {
+		long accountId = createAccount("No overlap", EightcapFixture.LOGIN);
+		byte[] existingReport = EightcapFixture.csvBytes(reportRows("EXISTING-1"), false);
+		JsonNode existingPreview = preview(accountId, "existing.csv", existingReport);
+		importFile(
+				accountId,
+				"existing.csv",
+				existingReport,
+				existingPreview.path("fileSha256").asString(),
+				false,
+				200);
+
+		byte[] newReport = EightcapFixture.csvBytes(reportRows("NEW-1"), false);
+		JsonNode preview = preview(accountId, "new.csv", newReport);
+		assertWarning(preview, "NO_EXISTING_TRADE_OVERLAP");
+		JsonNode result = importFile(
+				accountId, "new.csv", newReport, preview.path("fileSha256").asString(), false, 200);
+		assertWarning(result, "NO_EXISTING_TRADE_OVERLAP");
+	}
+
+	@Test
+	void doesNotWarnWhenImportedTradesPartiallyOverlapExistingTrades() throws Exception {
+		long accountId = createAccount("Partial overlap", EightcapFixture.LOGIN);
+		byte[] existingReport = EightcapFixture.csvBytes(reportRows("EXISTING-2"), false);
+		JsonNode existingPreview = preview(accountId, "existing.csv", existingReport);
+		importFile(
+				accountId,
+				"existing.csv",
+				existingReport,
+				existingPreview.path("fileSha256").asString(),
+				false,
+				200);
+
+		byte[] partialReport = EightcapFixture.csvBytes(reportRows("EXISTING-2", "NEW-2"), false);
+		JsonNode preview = preview(accountId, "partial.csv", partialReport);
+		assertNoWarnings(preview);
+	}
+
+	@Test
+	void doesNotWarnWhenReimportedTradesFullyOverlap() throws Exception {
+		long accountId = createAccount("Full overlap", EightcapFixture.LOGIN);
+		byte[] report = EightcapFixture.csvBytes(reportRows("EXISTING-3"), false);
+		JsonNode firstPreview = preview(accountId, "full.csv", report);
+		importFile(accountId, "full.csv", report, firstPreview.path("fileSha256").asString(), false, 200);
+
+		JsonNode repeatedPreview = preview(accountId, "full.csv", report);
+		assertNoWarnings(repeatedPreview);
+		JsonNode result = importFile(
+				accountId, "full.csv", report, repeatedPreview.path("fileSha256").asString(), false, 200);
+		assertNoWarnings(result);
+	}
+
+	@Test
+	void doesNotWarnOnFirstImportIntoEmptyAccount() throws Exception {
+		long accountId = createAccount("Empty account", EightcapFixture.LOGIN);
+		byte[] report = EightcapFixture.csvBytes(reportRows("FIRST-IMPORT"), false);
+		JsonNode preview = preview(accountId, "first.csv", report);
+		assertNoWarnings(preview);
+		JsonNode result = importFile(
+				accountId, "first.csv", report, preview.path("fileSha256").asString(), false, 200);
+		assertNoWarnings(result);
+	}
+
+	@Test
 	void summarizesImportedReportPnlAndRByUserTimezone() throws Exception {
 		long accountId = createAccount(
 				"Performance",
@@ -540,6 +604,26 @@ class EightcapImportIntegrationTests {
 			return objectMapper.readTree(result.getResponse().getContentAsByteArray());
 		}
 		return objectMapper.readTree(result.getResponse().getContentAsByteArray());
+	}
+
+	private List<List<String>> reportRows(String... tickets) {
+		List<List<String>> rows = new ArrayList<>();
+		List<List<String>> fixtureRows = EightcapFixture.uniqueRows();
+		for (int i = 0; i < tickets.length; i++) {
+			List<String> row = new ArrayList<>(fixtureRows.get(i));
+			row.set(0, tickets[i]);
+			rows.add(List.copyOf(row));
+		}
+		return List.copyOf(rows);
+	}
+
+	private void assertWarning(JsonNode result, String code) {
+		org.junit.jupiter.api.Assertions.assertEquals(1, result.path("warnings").size());
+		org.junit.jupiter.api.Assertions.assertEquals(code, result.path("warnings").get(0).path("code").asString());
+	}
+
+	private void assertNoWarnings(JsonNode result) {
+		org.junit.jupiter.api.Assertions.assertEquals(0, result.path("warnings").size());
 	}
 
 	private void assertSummary(

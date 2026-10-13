@@ -13,4 +13,6 @@ public interface TradeRepository extends JpaRepository<TradeEntity, Long> {
 
 	List<TradeEntity> findAllByTradingAccountId(Long tradingAccountId);
 
+	boolean existsByTradingAccountId(Long tradingAccountId);
+
 }

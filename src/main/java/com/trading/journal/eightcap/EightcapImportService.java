@@ -91,7 +91,11 @@ public class EightcapImportService {
 				assessment.newCashTransactions(),
 				assessment.alreadyImportedCashTransactions(),
 				assessment.loginMismatch(),
-				warnings(report.rows().size(), report.rows().size() - uniqueRows.size(), assessment.loginMismatch()));
+				warnings(
+						report.rows().size(),
+						report.rows().size() - uniqueRows.size(),
+						assessment.loginMismatch(),
+						assessment.noExistingTradeOverlap()));
 	}
 
 	@Transactional
@@ -247,7 +251,11 @@ public class EightcapImportService {
 				assessment.alreadyImportedTradeCloses(),
 				assessment.alreadyImportedCashTransactions(),
 				assessment.nonTradeRows(),
-				warnings(report.rows().size(), report.rows().size() - uniqueRows.size(), assessment.loginMismatch()));
+				warnings(
+						report.rows().size(),
+						report.rows().size() - uniqueRows.size(),
+						assessment.loginMismatch(),
+						assessment.noExistingTradeOverlap()));
 	}
 
 	private Assessment assess(TradingAccountEntity account, List<EightcapReportRow> rows) {
@@ -284,6 +292,18 @@ public class EightcapImportService {
 				.filter(row -> !existingCloseFingerprints.contains(row.fingerprint())).count();
 		int newCashTransactions = (int) cashRows.stream()
 				.filter(row -> !existingCashFingerprints.contains(row.fingerprint())).count();
+		boolean accountHasTrades = trades.existsByTradingAccountId(account.getId());
+		boolean tradeOverlap = !existingTrades.isEmpty();
+		if (!tradeOverlap && accountHasTrades && !tradeRows.isEmpty()) {
+			List<String> positionIds = tradeRows.stream()
+					.map(row -> row.symbol() + ":" + row.ticket())
+					.distinct()
+					.toList();
+			tradeOverlap = tradeOrders.findAllByTradingAccountIdAndExternalOrderIdIn(account.getId(), tickets).stream()
+							.anyMatch(order -> order.getTradeId() != null)
+					|| tradeOrders.findAllByTradingAccountIdAndPositionIdIn(account.getId(), positionIds).stream()
+							.anyMatch(order -> order.getTradeId() != null);
+		}
 		Set<String> fileLogins = rows.stream().map(EightcapReportRow::login)
 				.filter(login -> !login.isBlank()).collect(Collectors.toSet());
 		boolean loginMismatch = account.getBrokerLogin() != null
@@ -297,6 +317,7 @@ public class EightcapImportService {
 				newCashTransactions,
 				cashRows.size() - newCashTransactions,
 				loginMismatch,
+				!tradeRows.isEmpty() && accountHasTrades && !tradeOverlap,
 				existingTrades,
 				existingCloseFingerprints,
 				existingCashFingerprints);
@@ -348,7 +369,8 @@ public class EightcapImportService {
 		return new ArrayList<>(unique.values());
 	}
 
-	private List<ImportWarning> warnings(int totalRows, int duplicateRows, boolean loginMismatch) {
+	private List<ImportWarning> warnings(
+			int totalRows, int duplicateRows, boolean loginMismatch, boolean noExistingTradeOverlap) {
 		List<ImportWarning> warnings = new ArrayList<>();
 		if ((long) duplicateRows * 10 > totalRows) {
 			warnings.add(new ImportWarning(
@@ -359,6 +381,11 @@ public class EightcapImportService {
 			warnings.add(new ImportWarning(
 					"LOGIN_MISMATCH",
 					"The report login does not match this trading account. Confirm only if this report belongs here."));
+		}
+		if (noExistingTradeOverlap) {
+			warnings.add(new ImportWarning(
+					"NO_EXISTING_TRADE_OVERLAP",
+					"None of the report's trades match existing trades in this account by order ID or position ID."));
 		}
 		return List.copyOf(warnings);
 	}
@@ -384,6 +411,7 @@ public class EightcapImportService {
 			int newCashTransactions,
 			int alreadyImportedCashTransactions,
 			boolean loginMismatch,
+			boolean noExistingTradeOverlap,
 			Map<String, TradeEntity> existingTradeByTicket,
 			Set<String> existingCloseFingerprints,
 			Set<String> existingCashFingerprints) {
