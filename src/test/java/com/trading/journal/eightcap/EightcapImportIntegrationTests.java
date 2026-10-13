@@ -390,6 +390,38 @@ class EightcapImportIntegrationTests {
 	}
 
 	@Test
+	void importingTradesReportAfterMultipleTradingViewTradesPreservesPositiveVolumes() throws Exception {
+		long accountId = createAccount("Report after multiple TradingView trades", EightcapFixture.LOGIN);
+		importTradingViewRows(accountId, List.of(
+				tradingViewOrder(
+						"XAUUSD", "Buy", "Market", "0.20", "0.20", "", "", "100", "Filled",
+						"2026-10-01 16:00:00", "XAUUSD:6001", "0", "", "", "6001"),
+				tradingViewOrder(
+						"XAUUSD", "Sell", "Market", "0.20", "0.20", "", "", "110", "Filled",
+						"2026-10-01 16:30:00", "XAUUSD:6001", "0", "20", "20", "6003"),
+				tradingViewOrder(
+						"XAUUSD", "Buy", "Market", "0.20", "0.20", "", "", "100", "Filled",
+						"2026-10-02 16:00:00", "XAUUSD:6002", "0", "", "", "6002"),
+				tradingViewOrder(
+						"XAUUSD", "Sell", "Market", "0.20", "0.20", "", "", "110", "Filled",
+						"2026-10-02 16:30:00", "XAUUSD:6002", "0", "20", "20", "6004")));
+
+		byte[] report = EightcapFixture.csvBytes(List.of(
+				eightcapTradeRow("6001", "20.00"), eightcapTradeRow("6002", "20.00")), false);
+		JsonNode preview = preview(accountId, "report-after-tradingview.csv", report);
+		importFile(accountId, "report-after-tradingview.csv", report,
+				preview.path("fileSha256").asString(), false, 200);
+		org.junit.jupiter.api.Assertions.assertEquals(
+				2,
+				jdbcClient.sql("select count(*) from trades where trading_account_id = ? and has_trades_report")
+						.param(accountId).query(Integer.class).single());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				new BigDecimal("0.40000"),
+				jdbcClient.sql("select sum(opened_volume) from trades where trading_account_id = ?")
+						.param(accountId).query(BigDecimal.class).single());
+	}
+
+	@Test
 	void btcAutoRUsesTheOnlyStop() throws Exception {
 		long accountId = createAccount("Auto R BTC", EightcapFixture.LOGIN);
 		importTradingViewRows(accountId, btcPosition(

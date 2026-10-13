@@ -191,7 +191,7 @@ public class TradeEntity {
 		this.openTimeServer = openTimeServer;
 		this.openedAt = openedAt;
 		this.openPrice = openPrice;
-		this.openedVolume = BigDecimal.ZERO;
+		this.openedVolume = null;
 		this.grossPnl = BigDecimal.ZERO;
 		this.feesAndSwap = BigDecimal.ZERO;
 		this.netPnl = BigDecimal.ZERO;
@@ -203,7 +203,7 @@ public class TradeEntity {
 			BigDecimal gross,
 			BigDecimal fees,
 			BigDecimal net) {
-		this.openedVolume = this.openedVolume.add(volume);
+		this.openedVolume = (this.openedVolume == null ? BigDecimal.ZERO : this.openedVolume).add(volume);
 		this.grossPnl = this.grossPnl.add(gross);
 		this.feesAndSwap = this.feesAndSwap.add(fees);
 		this.netPnl = this.netPnl.add(net);

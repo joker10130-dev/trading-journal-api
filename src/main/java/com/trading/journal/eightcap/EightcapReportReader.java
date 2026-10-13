@@ -2,15 +2,19 @@ package com.trading.journal.eightcap;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.StringReader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -20,18 +24,25 @@ import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import javax.xml.parsers.ParserConfigurationException;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
-import org.apache.poi.EncryptedDocumentException;
-import org.apache.poi.ss.usermodel.Cell;
-import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
+import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.openxml4j.opc.PackageAccess;
 import org.apache.poi.ss.usermodel.DateUtil;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.util.XMLHelper;
+import org.apache.poi.xssf.eventusermodel.XSSFReader;
+import org.apache.poi.xssf.model.SharedStrings;
+import org.apache.poi.xssf.model.StylesTable;
+import org.apache.poi.xssf.usermodel.XSSFCellStyle;
 import org.springframework.stereotype.Component;
+import org.xml.sax.Attributes;
+import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
+import org.xml.sax.helpers.DefaultHandler;
 
 @Component
 public class EightcapReportReader {
@@ -146,46 +157,41 @@ public class EightcapReportReader {
 
 	private List<EightcapReportRow> readXlsx(byte[] content) {
 		validateXlsxArchive(content);
-		try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
-			if (workbook.getNumberOfSheets() == 0) {
-				throw new EightcapReportException("The XLSX report contains no worksheets.");
-			}
-			Sheet sheet = workbook.getSheetAt(0);
-			Row header = sheet.getRow(1);
-			if (header == null) {
-				throw new EightcapReportException("The XLSX report is missing its header row at line 2.");
-			}
-			Map<String, Integer> columns = validateHeaders(
-					readHeader(header),
-					header.getRowNum() + 1);
-			if (sheet.getLastRowNum() - 1 > MAX_DATA_ROWS) {
-				throw new EightcapReportException("The report exceeds the 100,000 data-row limit.");
-			}
-			List<EightcapReportRow> rows = new ArrayList<>();
-			List<String> errors = new ArrayList<>();
-			int errorCount = 0;
-			for (int rowIndex = 2; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
-				Row row = sheet.getRow(rowIndex);
-				if (row == null || isBlank(row, columns.size())) {
-					continue;
+		Path temporaryFile = null;
+		try {
+			temporaryFile = Files.createTempFile("eightcap-report-", ".xlsx");
+			Files.write(temporaryFile, content);
+			try (OPCPackage packageFile = OPCPackage.open(temporaryFile.toFile(), PackageAccess.READ)) {
+				XSSFReader reader = new XSSFReader(packageFile);
+				reader.setUseReadOnlySharedStringsTable(true);
+				SharedStrings sharedStrings = reader.getSharedStringsTable();
+				StylesTable styles = reader.getStylesTable();
+				Iterator<InputStream> sheets = reader.getSheetsData();
+				if (!sheets.hasNext()) {
+					throw new EightcapReportException("The XLSX report contains no worksheets.");
 				}
-				int lineNumber = rowIndex + 1;
-				try {
-					rows.add(mapRow(lineNumber, name -> readCell(row.getCell(columns.get(name))), true));
-				}
-				catch (RowMappingException e) {
-					errorCount++;
-					addError(errors, "line " + lineNumber + ", " + e.column + ": " + e.getMessage());
+				try (InputStream sheet = sheets.next()) {
+					XlsxSheetHandler handler = new XlsxSheetHandler(sharedStrings, styles);
+					XMLReader parser = XMLHelper.newXMLReader();
+					parser.setContentHandler(handler);
+					parser.parse(new InputSource(sheet));
+					return handler.rows();
 				}
 			}
-			if (errorCount > 0) {
-				throw new EightcapReportException(
-						errorCount + " malformed data row(s); no rows were imported.", errors);
-			}
-			return rows;
 		}
-		catch (IOException | EncryptedDocumentException | IllegalArgumentException e) {
+		catch (IOException | OpenXML4JException | ParserConfigurationException | SAXException
+				| IllegalArgumentException e) {
 			throw new EightcapReportException("The XLSX report is invalid or cannot be opened.");
+		}
+		finally {
+			if (temporaryFile != null) {
+				try {
+					Files.deleteIfExists(temporaryFile);
+				}
+				catch (IOException e) {
+					throw new IllegalStateException("The temporary XLSX report could not be removed.", e);
+				}
+			}
 		}
 	}
 
@@ -222,14 +228,6 @@ public class EightcapReportReader {
 		if (entries == 0) {
 			throw new EightcapReportException("The XLSX report is not a valid ZIP archive.");
 		}
-	}
-
-	private List<String> readHeader(Row row) {
-		List<String> header = new ArrayList<>();
-		for (int i = 0; i < row.getLastCellNum(); i++) {
-			header.add(readCell(row.getCell(i)));
-		}
-		return header;
 	}
 
 	private Map<String, Integer> validateHeaders(Iterable<String> actualHeaders, int lineNumber) {
@@ -342,34 +340,159 @@ public class EightcapReportReader {
 		}
 	}
 
-	private String readCell(Cell cell) {
-		if (cell == null || cell.getCellType() == CellType.BLANK) {
-			return "";
-		}
-		CellType type = cell.getCellType() == CellType.FORMULA ? cell.getCachedFormulaResultType() : cell.getCellType();
-		if (type == CellType.NUMERIC) {
-			double numeric = cell.getNumericCellValue();
-			if (DateUtil.isCellDateFormatted(cell)) {
-				return "@excel-date:" + numeric;
-			}
-			return BigDecimal.valueOf(numeric).stripTrailingZeros().toPlainString();
-		}
-		if (type == CellType.STRING) {
-			return cell.getStringCellValue();
-		}
-		if (type == CellType.BOOLEAN) {
-			return Boolean.toString(cell.getBooleanCellValue());
-		}
-		return "";
-	}
+	private final class XlsxSheetHandler extends DefaultHandler {
 
-	private boolean isBlank(Row row, int cellCount) {
-		for (int i = 0; i < cellCount; i++) {
-			if (!readCell(row.getCell(i)).isBlank()) {
+		private final SharedStrings sharedStrings;
+		private final StylesTable styles;
+		private final List<EightcapReportRow> rows = new ArrayList<>();
+		private final List<String> errors = new ArrayList<>();
+		private Map<String, Integer> columns;
+		private Map<Integer, String> cells;
+		private String cellType;
+		private int cellIndex;
+		private int styleIndex;
+		private int rowNumber;
+		private int errorCount;
+		private String captureElement;
+		private StringBuilder cellContent;
+
+		private XlsxSheetHandler(SharedStrings sharedStrings, StylesTable styles) {
+			this.sharedStrings = sharedStrings;
+			this.styles = styles;
+		}
+
+		@Override
+		public void startElement(String uri, String localName, String qName, Attributes attributes) {
+			if ("row".equals(localName)) {
+				rowNumber = Integer.parseInt(attributes.getValue("r"));
+				if (rowNumber - 2 > MAX_DATA_ROWS) {
+					throw new EightcapReportException("The report exceeds the 100,000 data-row limit.");
+				}
+				cells = new HashMap<>();
+			} else if ("c".equals(localName)) {
+				cellIndex = columnIndex(attributes.getValue("r"));
+				cellType = attributes.getValue("t");
+				String style = attributes.getValue("s");
+				styleIndex = style == null ? 0 : Integer.parseInt(style);
+				cellContent = new StringBuilder();
+			} else if ("v".equals(localName)
+					|| ("t".equals(localName) && "inlineStr".equals(cellType))) {
+				captureElement = localName;
+			}
+		}
+
+		@Override
+		public void characters(char[] ch, int start, int length) {
+			if (captureElement != null && cellContent != null) {
+				cellContent.append(ch, start, length);
+			}
+		}
+
+		@Override
+		public void endElement(String uri, String localName, String qName) {
+			if (localName.equals(captureElement)) {
+				captureElement = null;
+			} else if ("c".equals(localName)) {
+				cells.put(cellIndex, cellValue());
+				cellContent = null;
+			} else if ("row".equals(localName)) {
+				processRow();
+				cells = null;
+			}
+		}
+
+		private String cellValue() {
+			String value = cellContent.toString();
+			if (value.isEmpty()) {
+				return "";
+			}
+			if ("s".equals(cellType)) {
+				if (sharedStrings == null) {
+					throw new IllegalArgumentException("A shared-string cell has no shared strings table.");
+				}
+				return sharedStrings.getItemAt(Integer.parseInt(value)).getString();
+			}
+			if ("inlineStr".equals(cellType)) {
+				return value;
+			}
+			if ("b".equals(cellType)) {
+				return Boolean.toString("1".equals(value));
+			}
+			if ("e".equals(cellType)) {
+				return "";
+			}
+			if (isDateCell()) {
+				return "@excel-date:" + value;
+			}
+			return value;
+		}
+
+		private boolean isDateCell() {
+			if (styleIndex == 0) {
 				return false;
 			}
+			XSSFCellStyle style = styles.getStyleAt(styleIndex);
+			return DateUtil.isADateFormat(style.getDataFormat(), style.getDataFormatString());
 		}
-		return true;
+
+		private void processRow() {
+			if (rowNumber == 2) {
+				int width = cells.keySet().stream().mapToInt(Integer::intValue).max().orElse(-1) + 1;
+				List<String> headers = new ArrayList<>(width);
+				for (int i = 0; i < width; i++) {
+					headers.add(cells.getOrDefault(i, ""));
+				}
+				columns = validateHeaders(headers, rowNumber);
+				return;
+			}
+			if (rowNumber < 3) {
+				return;
+			}
+			if (columns == null) {
+				throw new EightcapReportException("The XLSX report is missing its header row at line 2.");
+			}
+			boolean blank = true;
+			for (int i = 0; i < columns.size(); i++) {
+				if (!cells.getOrDefault(i, "").isBlank()) {
+					blank = false;
+					break;
+				}
+			}
+			if (blank) {
+				return;
+			}
+			try {
+				rows.add(mapRow(rowNumber, name -> cells.getOrDefault(columns.get(name), ""), true));
+				}
+				catch (RowMappingException e) {
+				errorCount++;
+				addError(errors, "line " + rowNumber + ", " + e.column + ": " + e.getMessage());
+			}
+		}
+
+		private int columnIndex(String reference) {
+			int column = 0;
+			for (int i = 0; i < reference.length(); i++) {
+				char c = reference.charAt(i);
+				if (!Character.isLetter(c)) {
+					break;
+				}
+				column = column * 26 + Character.toUpperCase(c) - 'A' + 1;
+			}
+			return column - 1;
+		}
+
+		private List<EightcapReportRow> rows() {
+			if (columns == null) {
+				throw new EightcapReportException("The XLSX report is missing its header row at line 2.");
+			}
+			if (errorCount > 0) {
+				throw new EightcapReportException(
+						errorCount + " malformed data row(s); no rows were imported.", errors);
+			}
+			return rows;
+		}
+
 	}
 
 	private byte[] sha256(byte[] content) {
