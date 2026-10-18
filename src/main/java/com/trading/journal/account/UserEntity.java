@@ -22,11 +22,19 @@ public class UserEntity {
 	@Column(nullable = false, unique = true, length = 320)
 	private String email;
 
+	@Column(name = "password_hash", length = 100)
+	private String passwordHash;
+
 	@Column(nullable = false, length = 64)
 	private String timezone;
 
 	public UserEntity(String email) {
+		this(email, null);
+	}
+
+	public UserEntity(String email, String passwordHash) {
 		this.email = email;
+		this.passwordHash = passwordHash;
 		this.timezone = "Asia/Bangkok";
 	}
 

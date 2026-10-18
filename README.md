@@ -23,23 +23,49 @@ Spring Boot 4.1.1 backend for the trading-journal PoC. Requires Java 25 and Dock
    `trading_journal` / `local-development-only`. To override them, set
    `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` before starting Compose.
 
-3. Set development-only API credentials in this PowerShell session, then start
-   the API with the `local` profile (which enables Docker Compose integration):
+3. Create a development-only JWT signing key, then start the API with the `local`
+   profile (which enables Docker Compose integration):
 
    ```powershell
-   $env:SPRING_SECURITY_USER_NAME = "local-user"
-   $env:SPRING_SECURITY_USER_PASSWORD = "local-password"
+   $bytes = New-Object byte[] 32
+   $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+   $rng.GetBytes($bytes)
+   $rng.Dispose()
+   $env:JWT_SECRET_BASE64 = [Convert]::ToBase64String($bytes)
    .\mvnw.cmd -Plocal spring-boot:run -Dspring-boot.run.profiles=local
    ```
 
-4. In a second PowerShell window, verify the authenticated health endpoint:
+4. In a second PowerShell window, create a development user and use its short-lived
+   access token to call an authenticated API:
 
    ```powershell
-   curl.exe -u "local-user:local-password" http://localhost:8080/actuator/health
+   $session = curl.exe -s -c cookies.txt -X POST http://localhost:8080/api/v1/auth/sign-up `
+     -H "Content-Type: application/json" `
+     -d '{"email":"local-user@example.test","password":"development-password"}' | ConvertFrom-Json
+   curl.exe -H "Authorization: Bearer $($session.accessToken)" http://localhost:8080/api/v1/trading-accounts
    ```
 
-   Use the same credentials set in step 3. A successful response contains
-   `"status":"UP"`. Stop the API with `Ctrl+C`.
+   Access tokens expire after 10 minutes. A refresh token is issued as an
+   HttpOnly, SameSite=Strict cookie. Keep the signing key private and use a
+   managed secret in production. Stop the API with `Ctrl+C`.
+
+## Authentication
+
+Sign up and sign in with JSON fields `email` and `password`:
+
+```text
+POST /api/v1/auth/sign-up
+POST /api/v1/auth/sign-in
+POST /api/v1/auth/refresh
+POST /api/v1/auth/sign-out
+```
+
+Sign-up is open for the MVP and requires a password of at least 10 characters.
+Sign-in failures use a generic message and are rate-limited after five failures
+in 15 minutes. Access tokens are returned in the JSON response and sent as
+`Authorization: Bearer <accessToken>`. Refresh tokens are random, stored only as
+hashes, rotated on refresh, and revoked on sign-out. Password reset is omitted
+until an email service is available.
 
 Flyway owns the schema. Hibernate validates it at startup and must not create or
 update tables. Springdoc is disabled by default; enable the `dev` profile to
@@ -53,11 +79,12 @@ Run backend tests with:
 
 ## Eightcap Trades Report PoC
 
-The authenticated principal name is mapped to a user row. Create accounts with
-`POST /api/v1/trading-accounts`; account names, trades, closes, cash transactions,
-and import history are scoped to that user. For local API testing, configure
-`SPRING_SECURITY_USER_NAME` and `SPRING_SECURITY_USER_PASSWORD` before startup.
-The default Spring Security user is for development only.
+JWT subjects are registered user emails. Create, rename and list trading accounts
+with `POST`, `PUT /api/v1/trading-accounts/{accountId}` and
+`GET /api/v1/trading-accounts`; accounts, trades, closes, cash transactions and
+import history are scoped to that user.
+Sign-up is open for the MVP; passwords must be at least 10 characters. Password
+reset is not available because no email service is configured.
 
 Create an Eightcap account:
 

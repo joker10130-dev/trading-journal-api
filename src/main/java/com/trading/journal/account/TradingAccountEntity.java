@@ -55,4 +55,17 @@ public class TradingAccountEntity {
 		this.tradesReportUtcOffsetMinutes = tradesReportUtcOffsetMinutes;
 	}
 
+	public void updateDetails(
+			String name,
+			String broker,
+			String currency,
+			String brokerLogin,
+			Short tradesReportUtcOffsetMinutes) {
+		this.name = name;
+		this.broker = broker;
+		this.currency = currency;
+		this.brokerLogin = brokerLogin;
+		this.tradesReportUtcOffsetMinutes = tradesReportUtcOffsetMinutes;
+	}
+
 }
