@@ -71,6 +71,19 @@ public class AuthController {
 		clearRefreshCookie(response);
 	}
 
+	@PostMapping("/password-reset/request")
+	@ResponseStatus(HttpStatus.ACCEPTED)
+	public PasswordResetRequestResponse requestPasswordReset(
+			@Valid @RequestBody PasswordResetRequest request) {
+		return new PasswordResetRequestResponse(authService.requestPasswordReset(request.email()));
+	}
+
+	@PostMapping("/password-reset/confirm")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void confirmPasswordReset(@Valid @RequestBody PasswordResetConfirmation request) {
+		authService.resetPassword(request.token(), request.newPassword());
+	}
+
 	private AuthResponse respond(AuthService.AuthTokens tokens, HttpServletResponse response) {
 		Duration remaining = Duration.between(Instant.now(), tokens.refreshTokenExpiresAt());
 		ResponseCookie cookie = ResponseCookie.from(REFRESH_COOKIE, tokens.refreshToken())
@@ -103,6 +116,17 @@ public class AuthController {
 	public record SignInRequest(
 			@NotBlank @Email @Size(max = 320) String email,
 			@NotBlank @Size(max = 72) String password) {
+	}
+
+	public record PasswordResetRequest(@NotBlank @Email @Size(max = 320) String email) {
+	}
+
+	public record PasswordResetConfirmation(
+			@NotBlank @Size(max = 128) String token,
+			@NotBlank @Size(min = 10, max = 72) String newPassword) {
+	}
+
+	public record PasswordResetRequestResponse(String message) {
 	}
 
 	public record AuthResponse(String accessToken, String tokenType, Instant expiresAt) {

@@ -38,4 +38,8 @@ public class UserEntity {
 		this.timezone = "Asia/Bangkok";
 	}
 
+	public void updatePasswordHash(String passwordHash) {
+		this.passwordHash = passwordHash;
+	}
+
 }

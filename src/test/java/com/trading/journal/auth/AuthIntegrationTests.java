@@ -4,14 +4,24 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.concurrent.CopyOnWriteArrayList;
 import jakarta.servlet.http.Cookie;
 import com.trading.journal.JwtTestProperties;
 import com.trading.journal.TestcontainersConfiguration;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
@@ -21,7 +31,7 @@ import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, AuthIntegrationTests.ResetEmailTestConfiguration.class})
 class AuthIntegrationTests extends JwtTestProperties {
 
 	@Autowired
@@ -30,7 +40,132 @@ class AuthIntegrationTests extends JwtTestProperties {
 	@Autowired
 	private JdbcClient jdbcClient;
 
+	@Autowired
+	private ResetEmailStub resetEmailStub;
+
 	private final ObjectMapper objectMapper = new ObjectMapper();
+
+	@BeforeEach
+	void clearResetEmailMessages() {
+		resetEmailStub.clear();
+	}
+
+	@Test
+	void signupRequiresTenCharacterPasswordAndAcceptsTenCharacters() throws Exception {
+		mockMvc.perform(post("/api/v1/auth/sign-up")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsBytes(
+								new Credentials("auth-nine-chars@example.test", "123456789"))))
+				.andExpect(status().isBadRequest());
+
+		signUp("auth-ten-chars@example.test", "1234567890");
+	}
+
+	@Test
+	void duplicateSignupDoesNotRevealThatTheEmailExists() throws Exception {
+		signUp("duplicate-signup@example.test", "long-enough-password");
+
+		mockMvc.perform(post("/api/v1/auth/sign-up")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsBytes(
+								new Credentials("duplicate-signup@example.test", "long-enough-password"))))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.detail").value("Unable to create account with these details."));
+	}
+
+	@Test
+	void passwordResetUsesGenericRequestResponseAndAllowsOneSuccessfulReset() throws Exception {
+		MvcResult signup = signUp("reset-one-time@example.test", "original-password");
+		String oldRefreshToken = refreshToken(signup);
+		String genericMessage = requestPasswordReset("reset-one-time@example.test");
+		String resetUrl = resetEmailStub.messages().getFirst().resetUrl();
+		String token = resetTokenFromUrl(resetUrl);
+
+		org.junit.jupiter.api.Assertions.assertEquals(
+				0L,
+				jdbcClient.sql("select count(*) from password_reset_tokens where token_hash = ?")
+						.param(token)
+						.query(Long.class)
+						.single());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				1L,
+				jdbcClient.sql("select count(*) from password_reset_tokens where token_hash = ?")
+						.param(hashToken(token))
+						.query(Long.class)
+						.single());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				genericMessage,
+				requestPasswordReset("unknown-reset@example.test"));
+		org.junit.jupiter.api.Assertions.assertEquals(1, resetEmailStub.messages().size());
+
+		mockMvc.perform(post("/api/v1/auth/password-reset/confirm")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsBytes(
+								new PasswordResetConfirmation(token, "replacement-password"))))
+				.andExpect(status().isNoContent());
+
+		mockMvc.perform(post("/api/v1/auth/password-reset/confirm")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsBytes(
+								new PasswordResetConfirmation(token, "another-password"))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.detail").value("Reset link is invalid or expired."));
+
+		signInFailure(new Credentials("reset-one-time@example.test", "original-password"));
+		mockMvc.perform(post("/api/v1/auth/sign-in")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsBytes(
+								new Credentials("reset-one-time@example.test", "replacement-password"))))
+				.andExpect(status().isOk());
+		mockMvc.perform(post("/api/v1/auth/refresh")
+						.cookie(new Cookie("refresh_token", oldRefreshToken)))
+				.andExpect(status().isUnauthorized());
+	}
+
+	@Test
+	void expiredResetTokenIsRejectedAndResendFailureKeepsRequestGeneric() throws Exception {
+		signUp("reset-expired@example.test", "original-password");
+		requestPasswordReset("reset-expired@example.test");
+		String expiredToken = resetTokenFromUrl(resetEmailStub.messages().getFirst().resetUrl());
+		jdbcClient.sql("""
+						update password_reset_tokens
+						set created_at = current_timestamp - interval '2 seconds',
+						    expires_at = current_timestamp - interval '1 second'
+						where token_hash = ?
+						""")
+				.param(hashToken(expiredToken))
+				.update();
+		mockMvc.perform(post("/api/v1/auth/password-reset/confirm")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsBytes(
+								new PasswordResetConfirmation(expiredToken, "replacement-password"))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.detail").value("Reset link is invalid or expired."));
+
+		signUp("reset-delivery-failure@example.test", "original-password");
+		resetEmailStub.failNext = true;
+		String genericMessage = requestPasswordReset("reset-delivery-failure@example.test");
+		ResetEmailStub.ResetEmail failureEmail = resetEmailStub.messages().getLast();
+		String failedDeliveryToken = resetTokenFromUrl(failureEmail.resetUrl());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				"If an account exists for this email, password-reset instructions will be sent.",
+				genericMessage);
+		org.junit.jupiter.api.Assertions.assertEquals(
+				1L,
+				jdbcClient.sql("""
+								select count(*) from password_reset_tokens
+								where token_hash = ? and invalidated_at is not null
+								""")
+						.param(hashToken(failedDeliveryToken))
+						.query(Long.class)
+						.single());
+		mockMvc.perform(post("/api/v1/auth/password-reset/confirm")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsBytes(
+								new PasswordResetConfirmation(failedDeliveryToken, "replacement-password"))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.detail").value("Reset link is invalid or expired."));
+	}
 
 	@Test
 	void signupReturnsBearerTokenAndProtectedApiRejectsMissingOrInvalidToken() throws Exception {
@@ -180,6 +315,33 @@ class AuthIntegrationTests extends JwtTestProperties {
 		return objectMapper.readTree(result.getResponse().getContentAsByteArray()).path("detail").asString();
 	}
 
+	private String requestPasswordReset(String email) throws Exception {
+		MvcResult result = mockMvc.perform(post("/api/v1/auth/password-reset/request")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsBytes(new ResetRequest(email))))
+				.andExpect(status().isAccepted())
+				.andReturn();
+		return objectMapper.readTree(result.getResponse().getContentAsByteArray())
+				.path("message")
+				.asString();
+	}
+
+	private String resetTokenFromUrl(String resetUrl) {
+		java.util.regex.Matcher matcher =
+				java.util.regex.Pattern.compile("[?&]token=([A-Za-z0-9_-]+)").matcher(resetUrl);
+		org.junit.jupiter.api.Assertions.assertTrue(matcher.find());
+		return matcher.group(1);
+	}
+
+	private String hashToken(String token) {
+		try {
+			return HexFormat.of().formatHex(
+					MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.US_ASCII)));
+		} catch (NoSuchAlgorithmException exception) {
+			throw new IllegalStateException(exception);
+		}
+	}
+
 	private String refreshToken(MvcResult result) {
 		String setCookie = result.getResponse().getHeader("Set-Cookie");
 		org.junit.jupiter.api.Assertions.assertNotNull(setCookie);
@@ -190,6 +352,49 @@ class AuthIntegrationTests extends JwtTestProperties {
 	}
 
 	private record Credentials(String email, String password) {
+	}
+
+	private record ResetRequest(String email) {
+	}
+
+	private record PasswordResetConfirmation(String token, String newPassword) {
+	}
+
+	@TestConfiguration(proxyBeanMethods = false)
+	static class ResetEmailTestConfiguration {
+
+		@Bean
+		@Primary
+		ResetEmailStub resetEmailStub() {
+			return new ResetEmailStub();
+		}
+	}
+
+	static class ResetEmailStub implements PasswordResetEmailSender {
+
+		private final java.util.List<ResetEmail> sent = new CopyOnWriteArrayList<>();
+		private volatile boolean failNext;
+
+		@Override
+		public void sendPasswordResetEmail(String recipient, String resetUrl) {
+			sent.add(new ResetEmail(recipient, resetUrl));
+			if (failNext) {
+				failNext = false;
+				throw new PasswordResetEmailException("Stubbed Resend failure.");
+			}
+		}
+
+		java.util.List<ResetEmail> messages() {
+			return new ArrayList<>(sent);
+		}
+
+		void clear() {
+			sent.clear();
+			failNext = false;
+		}
+
+		record ResetEmail(String recipient, String resetUrl) {
+		}
 	}
 
 }

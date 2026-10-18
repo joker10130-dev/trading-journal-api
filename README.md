@@ -64,8 +64,16 @@ Sign-up is open for the MVP and requires a password of at least 10 characters.
 Sign-in failures use a generic message and are rate-limited after five failures
 in 15 minutes. Access tokens are returned in the JSON response and sent as
 `Authorization: Bearer <accessToken>`. Refresh tokens are random, stored only as
-hashes, rotated on refresh, and revoked on sign-out. Password-reset email is
-planned to use Resend and is not implemented in this slice.
+hashes, rotated on refresh, and revoked on sign-out.
+
+Request and confirm password resets at
+`POST /api/v1/auth/password-reset/request` and
+`POST /api/v1/auth/password-reset/confirm`. Reset requests always return the
+same message whether the email exists or delivery fails. Reset tokens are
+one-time, stored as hashes, expire after 30 minutes, and successful password
+changes revoke active refresh tokens. Configure `RESEND_API_KEY`,
+`RESEND_FROM_EMAIL` (a verified sender), and optionally `PASSWORD_RESET_URL`.
+Do not commit the Resend API key.
 
 Flyway owns the schema. Hibernate validates it at startup and must not create or
 update tables. Springdoc is disabled by default; enable the `dev` profile to
