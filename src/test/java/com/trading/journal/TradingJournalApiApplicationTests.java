@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Import;
 
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
-class TradingJournalApiApplicationTests {
+class TradingJournalApiApplicationTests extends JwtTestProperties {
 
 	@Test
 	void contextLoads() {

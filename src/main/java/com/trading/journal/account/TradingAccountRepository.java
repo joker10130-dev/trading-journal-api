@@ -17,6 +17,8 @@ public interface TradingAccountRepository extends JpaRepository<TradingAccountEn
 
 	boolean existsByUserIdAndNameIgnoreCase(Long userId, String name);
 
+	boolean existsByUserIdAndNameIgnoreCaseAndIdNot(Long userId, String name, Long id);
+
 	List<TradingAccountEntity> findAllByIdInAndUserId(Collection<Long> ids, Long userId);
 
 	@Lock(LockModeType.PESSIMISTIC_WRITE)

@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import com.trading.journal.TestcontainersConfiguration;
+import com.trading.journal.JwtTestProperties;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
@@ -29,7 +30,7 @@ import org.springframework.test.web.servlet.MvcResult;
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
-class EightcapImportIntegrationTests {
+class EightcapImportIntegrationTests extends JwtTestProperties {
 
 	private static final String USER = "stage-one@example.test";
 	private static byte[] fullXlsx;
