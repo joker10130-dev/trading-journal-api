@@ -6,7 +6,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.JdbcTypeCode;
@@ -41,12 +40,6 @@ public class TradingAccountEntity {
 	@Column(name = "trades_report_utc_offset_minutes")
 	private Short tradesReportUtcOffsetMinutes;
 
-	@Column(name = "default_risk_mode", length = 24)
-	private String defaultRiskMode;
-
-	@Column(name = "default_risk_value", precision = 18, scale = 5)
-	private BigDecimal defaultRiskValue;
-
 	public TradingAccountEntity(
 			Long userId,
 			String name,
@@ -54,31 +47,12 @@ public class TradingAccountEntity {
 			String currency,
 			String brokerLogin,
 			Short tradesReportUtcOffsetMinutes) {
-		this(userId, name, broker, currency, brokerLogin, tradesReportUtcOffsetMinutes, null, null);
-	}
-
-	public TradingAccountEntity(
-			Long userId,
-			String name,
-			String broker,
-			String currency,
-			String brokerLogin,
-			Short tradesReportUtcOffsetMinutes,
-			String defaultRiskMode,
-			BigDecimal defaultRiskValue) {
 		this.userId = userId;
 		this.name = name;
 		this.broker = broker;
 		this.currency = currency;
 		this.brokerLogin = brokerLogin;
 		this.tradesReportUtcOffsetMinutes = tradesReportUtcOffsetMinutes;
-		this.defaultRiskMode = defaultRiskMode;
-		this.defaultRiskValue = defaultRiskValue;
-	}
-
-	public void updateDefaultRiskRule(String defaultRiskMode, BigDecimal defaultRiskValue) {
-		this.defaultRiskMode = defaultRiskMode;
-		this.defaultRiskValue = defaultRiskValue;
 	}
 
 }

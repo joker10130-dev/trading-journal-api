@@ -26,7 +26,7 @@ import com.trading.journal.trade.TradeEntity;
 import com.trading.journal.trade.TradeOrderEntity;
 import com.trading.journal.trade.TradeOrderRepository;
 import com.trading.journal.trade.TradeRepository;
-import com.trading.journal.trade.TradeRiskCalculator;
+import com.trading.journal.trade.TradeManualRService;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,7 +43,7 @@ public class TradingViewImportService {
 	private final TradeRepository trades;
 	private final TradeCloseRepository tradeCloses;
 	private final TradeOrderRepository tradeOrders;
-	private final TradeRiskCalculator tradeRiskCalculator;
+	private final TradeManualRService manualRService;
 	private final TradingViewReportReader reader;
 
 	public TradingViewImportService(
@@ -53,7 +53,7 @@ public class TradingViewImportService {
 			TradeRepository trades,
 			TradeCloseRepository tradeCloses,
 			TradeOrderRepository tradeOrders,
-			TradeRiskCalculator tradeRiskCalculator,
+			TradeManualRService manualRService,
 			TradingViewReportReader reader) {
 		this.currentUserService = currentUserService;
 		this.accounts = accounts;
@@ -61,7 +61,7 @@ public class TradingViewImportService {
 		this.trades = trades;
 		this.tradeCloses = tradeCloses;
 		this.tradeOrders = tradeOrders;
-		this.tradeRiskCalculator = tradeRiskCalculator;
+		this.manualRService = manualRService;
 		this.reader = reader;
 	}
 
@@ -153,6 +153,12 @@ public class TradingViewImportService {
 				trade = trades.saveAndFlush(trade);
 				tradeByTicket.put(ticket, trade);
 			}
+			if (!trade.isHasTradesReport() && !trade.isHasTradingViewData()) {
+				List<TradeCloseEntity> manualCloses =
+						tradeCloses.findAllByTradingAccountIdAndTradeIdAndSource(
+								account.getId(), trade.getId(), "MANUAL");
+				tradeCloses.deleteAll(manualCloses);
+			}
 			trade.markHasTradingViewData();
 			for (TradeOrderEntity order : positionOrders) {
 				order.attachToTrade(trade.getId());
@@ -162,7 +168,7 @@ public class TradingViewImportService {
 				persistTradingViewCloses(user.getId(), account.getId(), batch.getId(), trade, positionOrders);
 			}
 		}
-		tradeRiskCalculator.recalculate(account);
+		tradeByTicket.values().forEach(manualRService::redistributeManualR);
 
 		return new ImportResult(
 				batch.getId(),

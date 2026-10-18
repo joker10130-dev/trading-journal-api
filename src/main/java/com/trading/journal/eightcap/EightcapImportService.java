@@ -28,7 +28,7 @@ import com.trading.journal.trade.TradeEntity;
 import com.trading.journal.trade.TradeRepository;
 import com.trading.journal.trade.TradeOrderEntity;
 import com.trading.journal.trade.TradeOrderRepository;
-import com.trading.journal.trade.TradeRiskCalculator;
+import com.trading.journal.trade.TradeManualRService;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,7 +43,7 @@ public class EightcapImportService {
 	private final TradeRepository trades;
 	private final TradeCloseRepository tradeCloses;
 	private final TradeOrderRepository tradeOrders;
-	private final TradeRiskCalculator tradeRiskCalculator;
+	private final TradeManualRService manualRService;
 	private final AccountTransactionRepository accountTransactions;
 	private final EightcapReportReader reader;
 
@@ -54,7 +54,7 @@ public class EightcapImportService {
 			TradeRepository trades,
 			TradeCloseRepository tradeCloses,
 			TradeOrderRepository tradeOrders,
-			TradeRiskCalculator tradeRiskCalculator,
+			TradeManualRService manualRService,
 			AccountTransactionRepository accountTransactions,
 			EightcapReportReader reader) {
 		this.currentUserService = currentUserService;
@@ -63,7 +63,7 @@ public class EightcapImportService {
 		this.trades = trades;
 		this.tradeCloses = tradeCloses;
 		this.tradeOrders = tradeOrders;
-		this.tradeRiskCalculator = tradeRiskCalculator;
+		this.manualRService = manualRService;
 		this.accountTransactions = accountTransactions;
 		this.reader = reader;
 	}
@@ -153,9 +153,14 @@ public class EightcapImportService {
 					List<TradeCloseEntity> tradingViewCloses =
 							tradeCloses.findAllByTradingAccountIdAndTradeIdAndSource(
 									account.getId(), trade.getId(), "TRADINGVIEW");
-					existingCloseFingerprints.removeAll(
-							tradingViewCloses.stream().map(TradeCloseEntity::getSourceFingerprint).toList());
+					List<TradeCloseEntity> manualCloses =
+							tradeCloses.findAllByTradingAccountIdAndTradeIdAndSource(
+									account.getId(), trade.getId(), "MANUAL");
+					java.util.stream.Stream.concat(tradingViewCloses.stream(), manualCloses.stream())
+							.map(TradeCloseEntity::getSourceFingerprint)
+							.forEach(existingCloseFingerprints::remove);
 					tradeCloses.deleteAll(tradingViewCloses);
+					tradeCloses.deleteAll(manualCloses);
 					trade.replaceWithTradesReport(
 							row.symbol(),
 							row.side(),
@@ -239,7 +244,7 @@ public class EightcapImportService {
 				}
 			}
 		}
-		tradeRiskCalculator.recalculate(account);
+		tradeByTicket.values().forEach(manualRService::redistributeManualR);
 
 		return new ImportResult(
 				batch.getId(),
