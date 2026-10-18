@@ -2,6 +2,7 @@ package com.trading.journal.eightcap;
 
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -22,6 +23,7 @@ import com.trading.journal.account.UserEntity;
 import com.trading.journal.eightcap.EightcapReportReader.ParsedEightcapReport;
 import com.trading.journal.imports.ImportBatchEntity;
 import com.trading.journal.imports.ImportBatchRepository;
+import com.trading.journal.imports.CsvBatchComposer;
 import com.trading.journal.trade.TradeCloseEntity;
 import com.trading.journal.trade.TradeCloseRepository;
 import com.trading.journal.trade.TradeEntity;
@@ -36,6 +38,14 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class EightcapImportService {
+
+	private static final int MAX_BATCH_FILES = 5;
+	private static final long MAX_BATCH_BYTES = 50L * 1024 * 1024;
+	private static final List<String> BATCH_CSV_HEADERS = List.of(
+			"Ticket", "Login", "Type", "Symbol", "Volume", "Swaps", "Commission",
+			"Open Time", "Open Price", "Close Time", "Close Price", "Profit", "Currency", "Comment");
+	private static final DateTimeFormatter BATCH_TIME_FORMAT =
+			DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss", Locale.ROOT);
 
 	private final CurrentUserService currentUserService;
 	private final TradingAccountRepository accounts;
@@ -91,11 +101,22 @@ public class EightcapImportService {
 				assessment.newCashTransactions(),
 				assessment.alreadyImportedCashTransactions(),
 				assessment.loginMismatch(),
+				assessment.nonTradeRows(),
+				0,
 				warnings(
 						report.rows().size(),
 						report.rows().size() - uniqueRows.size(),
 						assessment.loginMismatch(),
 						assessment.noExistingTradeOverlap()));
+	}
+
+	@Transactional(readOnly = true)
+	public MultiFilePreview previewFiles(Long accountId, List<BatchFile> files) {
+		UserEntity user = currentUserService.requireCurrentUser();
+		requireOwnedAccount(accountId, user.getId());
+		ComposedBatch composed = composeBatch(files);
+		ImportPreview preview = preview(accountId, composed.filename(), composed.content());
+		return new MultiFilePreview(composed.files(), preview);
 	}
 
 	@Transactional
@@ -263,6 +284,101 @@ public class EightcapImportService {
 						assessment.noExistingTradeOverlap()));
 	}
 
+	@Transactional
+	public MultiFileImportResult importFiles(
+			Long accountId,
+			List<BatchFile> files,
+			List<String> expectedSha256s,
+			boolean acknowledgeLoginMismatch) {
+		UserEntity user = currentUserService.requireCurrentUser();
+		accounts.findByIdAndUserIdForUpdate(accountId, user.getId())
+				.orElseThrow(() -> new ResponseStatusException(
+						HttpStatus.NOT_FOUND, "Trading account was not found."));
+		ComposedBatch composed = composeBatch(files);
+		if (expectedSha256s == null || expectedSha256s.size() != composed.files().size()) {
+			throw new ResponseStatusException(
+					HttpStatus.CONFLICT, "Preview every file in the batch before importing.");
+		}
+		for (int i = 0; i < composed.files().size(); i++) {
+			String expectedSha256 = expectedSha256s.get(i);
+			String actualSha256 = composed.files().get(i).fileSha256();
+			if (expectedSha256 == null || !MessageDigest.isEqual(
+					actualSha256.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+					expectedSha256.trim().toLowerCase(Locale.ROOT)
+							.getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
+				throw new ResponseStatusException(
+						HttpStatus.CONFLICT,
+						"One or more uploaded files changed after preview. Preview the batch again before importing.");
+			}
+		}
+		ImportResult result = importReport(
+				accountId,
+				composed.filename(),
+				composed.content(),
+				composed.fileSha256(),
+				acknowledgeLoginMismatch);
+		return new MultiFileImportResult(composed.files(), result);
+	}
+
+	private ComposedBatch composeBatch(List<BatchFile> files) {
+		if (files == null || files.isEmpty() || files.size() > MAX_BATCH_FILES) {
+			throw new ResponseStatusException(
+					HttpStatus.BAD_REQUEST, "A batch must contain between 1 and 5 Eightcap files.");
+		}
+		long totalBytes = files.stream().mapToLong(file -> file.content().length).sum();
+		if (totalBytes > MAX_BATCH_BYTES) {
+			throw new ResponseStatusException(
+					HttpStatus.BAD_REQUEST, "The combined upload exceeds the 50 MB batch limit.");
+		}
+
+		List<List<String>> rows = new ArrayList<>();
+		List<BatchFileInfo> fileInfos = new ArrayList<>();
+		for (BatchFile file : files) {
+			ParsedEightcapReport report = reader.read(file.filename(), file.content());
+			fileInfos.add(new BatchFileInfo(report.filename(), report.fileSha256(), report.rows().size()));
+			for (EightcapReportRow row : report.rows()) {
+				rows.add(List.of(
+						row.ticket(),
+						row.login(),
+						row.type(),
+						row.symbol(),
+						decimal(row.volume()),
+						decimal(row.swaps()),
+						decimal(row.commission()),
+						time(row.openTime()),
+						decimal(row.openPrice()),
+						time(row.closeTime()),
+						decimal(row.closePrice()),
+						decimal(row.profit()),
+						row.currency(),
+						row.comment()));
+			}
+		}
+		String filename = files.size() + "-files.csv";
+		byte[] combined = CsvBatchComposer.compose(BATCH_CSV_HEADERS, rows);
+		return new ComposedBatch(
+				filename,
+				combined,
+				java.util.HexFormat.of().formatHex(sha256(combined)),
+				List.copyOf(fileInfos));
+	}
+
+	private String decimal(java.math.BigDecimal value) {
+		return value == null ? "" : value.stripTrailingZeros().toPlainString();
+	}
+
+	private String time(java.time.LocalDateTime value) {
+		return value == null ? "" : value.format(BATCH_TIME_FORMAT);
+	}
+
+	private byte[] sha256(byte[] content) {
+		try {
+			return MessageDigest.getInstance("SHA-256").digest(content);
+		} catch (java.security.NoSuchAlgorithmException exception) {
+			throw new IllegalStateException("SHA-256 is unavailable.", exception);
+		}
+	}
+
 	private Assessment assess(TradingAccountEntity account, List<EightcapReportRow> rows) {
 		List<EightcapReportRow> tradeRows = rows.stream().filter(row -> !row.isCashTransaction()).toList();
 		List<EightcapReportRow> cashRows = rows.stream().filter(EightcapReportRow::isCashTransaction).toList();
@@ -425,6 +541,25 @@ public class EightcapImportService {
 	public record ImportWarning(String code, String message) {
 	}
 
+	public record BatchFile(String filename, byte[] content) {
+	}
+
+	public record BatchFileInfo(String filename, String fileSha256, int totalRows) {
+	}
+
+	public record MultiFilePreview(List<BatchFileInfo> files, ImportPreview preview) {
+	}
+
+	public record MultiFileImportResult(List<BatchFileInfo> files, ImportResult result) {
+	}
+
+	private record ComposedBatch(
+			String filename,
+			byte[] content,
+			String fileSha256,
+			List<BatchFileInfo> files) {
+	}
+
 	public record ImportPreview(
 			Long tradingAccountId,
 			String filename,
@@ -440,6 +575,8 @@ public class EightcapImportService {
 			int newCashTransactions,
 			int alreadyImportedCashTransactions,
 			boolean loginMismatch,
+			int cashRows,
+			int errorRows,
 			List<ImportWarning> warnings) {
 	}
 

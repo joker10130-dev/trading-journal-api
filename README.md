@@ -64,8 +64,8 @@ Sign-up is open for the MVP and requires a password of at least 10 characters.
 Sign-in failures use a generic message and are rate-limited after five failures
 in 15 minutes. Access tokens are returned in the JSON response and sent as
 `Authorization: Bearer <accessToken>`. Refresh tokens are random, stored only as
-hashes, rotated on refresh, and revoked on sign-out. Password reset is omitted
-until an email service is available.
+hashes, rotated on refresh, and revoked on sign-out. Password-reset email is
+planned to use Resend and is not implemented in this slice.
 
 Flyway owns the schema. Hibernate validates it at startup and must not create or
 update tables. Springdoc is disabled by default; enable the `dev` profile to
@@ -84,7 +84,7 @@ with `POST`, `PUT /api/v1/trading-accounts/{accountId}` and
 `GET /api/v1/trading-accounts`; accounts, trades, closes, cash transactions and
 import history are scoped to that user.
 Sign-up is open for the MVP; passwords must be at least 10 characters. Password
-reset is not available because no email service is configured.
+reset email is planned with Resend and is not implemented yet.
 
 Create an Eightcap account:
 
@@ -105,12 +105,24 @@ the 14 report columns. Uploads are limited to 10 MB and 100,000 data rows.
 ```text
 POST /api/v1/trading-accounts/{accountId}/imports/eightcap/preview
 POST /api/v1/trading-accounts/{accountId}/imports/eightcap
+POST /api/v1/trading-accounts/{accountId}/imports/eightcap/batch/preview
+POST /api/v1/trading-accounts/{accountId}/imports/eightcap/batch
+DELETE /api/v1/trading-accounts/{accountId}/imports/batches/{batchId}
 ```
 
 Send the preview's `fileSha256` as `sha256` to confirm. If preview reports
 `loginMismatch`, send `acknowledgeLoginMismatch=true` to continue. A duplicate
 rate above 10% adds a non-blocking monthly-export warning. Malformed reports
-return `ProblemDetail` errors with row numbers and make no writes.
+return `ProblemDetail` errors with row numbers and an `errorRows` count; malformed
+files are rejected without partial writes. A successful preview includes
+`totalRows`, `duplicateRows`, `newTrades`, `existingTrades`, `cashRows`, and
+`errorRows` counts.
+
+Batch endpoints accept up to five Eightcap files under multipart field `files`.
+The preview returns each original file's `fileSha256`; confirm with repeated
+`sha256s` values in the same order. Rows are combined and deduplicated together
+before a single batch is imported. Delete the batch with the `DELETE` endpoint
+when it was imported into the wrong account.
 
 Trade totals are available through
 `GET /api/v1/trading-accounts/summary?accountIds={id1},{id2}`. Trades Report close
@@ -141,7 +153,13 @@ then confirm with the returned `fileSha256`:
 ```text
 POST /api/v1/trading-accounts/{accountId}/imports/tradingview/preview
 POST /api/v1/trading-accounts/{accountId}/imports/tradingview
+POST /api/v1/trading-accounts/{accountId}/imports/tradingview/batch/preview
+POST /api/v1/trading-accounts/{accountId}/imports/tradingview/batch
 ```
+
+TradingView batch import uses the same `files` multipart field and ordered
+`sha256s` list as Eightcap batch import. Batch files are merged and deduplicated
+before they are saved in one import batch.
 
 All order statuses are retained for audit; only filled orders form positions and
 closes. Order IDs are idempotent within an account, and reusing an ID with changed

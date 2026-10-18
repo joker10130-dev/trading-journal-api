@@ -15,6 +15,7 @@ public class EightcapReportExceptionHandler {
 				exception.getMessage());
 		problem.setTitle("Invalid Eightcap report");
 		problem.setProperty("errors", exception.errors());
+		problem.setProperty("errorRows", exception.errorRows());
 		return problem;
 	}
 

@@ -68,6 +68,8 @@ class EightcapImportIntegrationTests extends JwtTestProperties {
 		org.junit.jupiter.api.Assertions.assertEquals(181, xlsxPreview.path("uniqueRows").asInt());
 		org.junit.jupiter.api.Assertions.assertEquals(EightcapFixture.TRADE_ROWS, xlsxPreview.path("newTrades").asInt());
 		org.junit.jupiter.api.Assertions.assertEquals(EightcapFixture.CASH_ROWS, xlsxPreview.path("newCashTransactions").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(EightcapFixture.CASH_ROWS, xlsxPreview.path("cashRows").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(0, xlsxPreview.path("errorRows").asInt());
 		org.junit.jupiter.api.Assertions.assertFalse(xlsxPreview.path("loginMismatch").asBoolean());
 		org.junit.jupiter.api.Assertions.assertEquals("HIGH_DUPLICATE_RATE", xlsxPreview.path("warnings").get(0).path("code").asString());
 
@@ -171,6 +173,143 @@ class EightcapImportIntegrationTests extends JwtTestProperties {
 	}
 
 	@Test
+	void duplicateRateWarningStartsOnlyAboveTenPercent() throws Exception {
+		long accountId = createAccount("Duplicate rate threshold", EightcapFixture.LOGIN);
+		List<List<String>> rowsAtThreshold = new ArrayList<>(reportRows(
+				"THRESHOLD-1", "THRESHOLD-2", "THRESHOLD-3", "THRESHOLD-4", "THRESHOLD-5",
+				"THRESHOLD-6", "THRESHOLD-7", "THRESHOLD-8", "THRESHOLD-9"));
+		rowsAtThreshold.add(rowsAtThreshold.getFirst());
+		byte[] thresholdReport = EightcapFixture.csvBytes(rowsAtThreshold, false);
+		JsonNode thresholdPreview = preview(accountId, "threshold.csv", thresholdReport);
+		org.junit.jupiter.api.Assertions.assertEquals(10, thresholdPreview.path("totalRows").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(1, thresholdPreview.path("duplicateRows").asInt());
+		assertNoWarnings(thresholdPreview);
+
+		List<List<String>> aboveThresholdRows = new ArrayList<>(reportRows(
+				"ABOVE-1", "ABOVE-2", "ABOVE-3", "ABOVE-4", "ABOVE-5",
+				"ABOVE-6", "ABOVE-7", "ABOVE-8"));
+		aboveThresholdRows.add(aboveThresholdRows.getFirst());
+		aboveThresholdRows.add(aboveThresholdRows.getFirst());
+		byte[] aboveThresholdReport = EightcapFixture.csvBytes(aboveThresholdRows, false);
+		JsonNode aboveThresholdPreview = preview(accountId, "above-threshold.csv", aboveThresholdReport);
+		org.junit.jupiter.api.Assertions.assertEquals(10, aboveThresholdPreview.path("totalRows").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(2, aboveThresholdPreview.path("duplicateRows").asInt());
+		assertWarning(aboveThresholdPreview, "HIGH_DUPLICATE_RATE");
+	}
+
+	@Test
+	void eightcapBatchPreviewCombinesAndDeduplicatesFilesBeforeImport() throws Exception {
+		long accountId = createAccount("Eightcap multi-file", EightcapFixture.LOGIN);
+		List<List<String>> rows = reportRows("BATCH-1", "BATCH-2");
+		byte[] firstFile = EightcapFixture.csvBytes(List.of(rows.getFirst()), false);
+		byte[] secondFile = EightcapFixture.csvBytes(List.of(rows.getFirst(), rows.get(1)), false);
+
+		MvcResult previewResult = mockMvc.perform(multipart(
+								"/api/v1/trading-accounts/{id}/imports/eightcap/batch/preview", accountId)
+						.file(new MockMultipartFile("files", "month-1.csv", "text/csv", firstFile))
+						.file(new MockMultipartFile("files", "month-2.csv", "text/csv", secondFile))
+						.with(user(USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.files.length()").value(2))
+				.andExpect(jsonPath("$.preview.totalRows").value(3))
+				.andExpect(jsonPath("$.preview.duplicateRows").value(1))
+				.andExpect(jsonPath("$.preview.uniqueRows").value(2))
+				.andExpect(jsonPath("$.preview.newTrades").value(2))
+				.andExpect(jsonPath("$.preview.cashRows").value(0))
+				.andExpect(jsonPath("$.preview.errorRows").value(0))
+				.andReturn();
+		JsonNode preview = objectMapper.readTree(previewResult.getResponse().getContentAsByteArray());
+		String firstHash = preview.path("files").get(0).path("fileSha256").asString();
+		String secondHash = preview.path("files").get(1).path("fileSha256").asString();
+
+		mockMvc.perform(multipart("/api/v1/trading-accounts/{id}/imports/eightcap/batch", accountId)
+						.file(new MockMultipartFile("files", "month-1.csv", "text/csv", firstFile))
+						.file(new MockMultipartFile("files", "month-2.csv", "text/csv", secondFile))
+						.param("sha256s", "0".repeat(64), secondHash)
+						.with(user(USER)))
+				.andExpect(status().isConflict());
+		org.junit.jupiter.api.Assertions.assertEquals(0, importBatchCountForAccount(accountId));
+
+		mockMvc.perform(multipart("/api/v1/trading-accounts/{id}/imports/eightcap/batch", accountId)
+						.file(new MockMultipartFile("files", "month-1.csv", "text/csv", firstFile))
+						.file(new MockMultipartFile("files", "month-2.csv", "text/csv", secondFile))
+						.param("sha256s", firstHash, secondHash)
+						.with(user(USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.result.totalRows").value(3))
+				.andExpect(jsonPath("$.result.duplicateRows").value(1))
+				.andExpect(jsonPath("$.result.importedTradeCloses").value(2));
+		org.junit.jupiter.api.Assertions.assertEquals(1, importBatchCountForAccount(accountId));
+		assertSummary(List.of(accountId), 2, "-60.00", "0.00", "-60.00");
+	}
+
+	@Test
+	void tradingViewBatchPreviewCombinesAndDeduplicatesFilesBeforeImport() throws Exception {
+		long accountId = createAccount("TradingView multi-file", EightcapFixture.LOGIN);
+		List<String> firstRow = tradingViewOrder(
+				"XAUUSD", "Buy", "Limit", "0.20", "0.20", "", "", "100", "Filled",
+				"2026-10-01 16:00:00", "XAUUSD:7101", "0", "", "", "7101");
+		List<String> secondRow = tradingViewOrder(
+				"XAUUSD", "Buy", "Limit", "0.20", "0.20", "", "", "100", "Filled",
+				"2026-10-01 17:00:00", "XAUUSD:7102", "0", "", "", "7102");
+		byte[] firstFile = tradingViewCsv(List.of(firstRow));
+		byte[] secondFile = tradingViewCsv(List.of(firstRow, secondRow));
+
+		MvcResult previewResult = mockMvc.perform(multipart(
+								"/api/v1/trading-accounts/{id}/imports/tradingview/batch/preview", accountId)
+						.file(new MockMultipartFile("files", "week-1.csv", "text/csv", firstFile))
+						.file(new MockMultipartFile("files", "week-2.csv", "text/csv", secondFile))
+						.with(user(USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.preview.totalRows").value(3))
+				.andExpect(jsonPath("$.preview.duplicateRows").value(1))
+				.andExpect(jsonPath("$.preview.newOrders").value(2))
+				.andExpect(jsonPath("$.preview.newTrades").value(2))
+				.andExpect(jsonPath("$.preview.cashRows").value(0))
+				.andExpect(jsonPath("$.preview.errorRows").value(0))
+				.andReturn();
+		JsonNode preview = objectMapper.readTree(previewResult.getResponse().getContentAsByteArray());
+
+		MvcResult importedBatch = mockMvc.perform(multipart(
+								"/api/v1/trading-accounts/{id}/imports/tradingview/batch", accountId)
+						.file(new MockMultipartFile("files", "week-1.csv", "text/csv", firstFile))
+						.file(new MockMultipartFile("files", "week-2.csv", "text/csv", secondFile))
+						.param(
+								"sha256s",
+								preview.path("files").get(0).path("fileSha256").asString(),
+								preview.path("files").get(1).path("fileSha256").asString())
+						.with(user(USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.result.totalRows").value(3))
+				.andExpect(jsonPath("$.result.duplicateRows").value(1))
+				.andExpect(jsonPath("$.result.importedOrders").value(2))
+				.andExpect(jsonPath("$.result.newTrades").value(2))
+				.andReturn();
+		org.junit.jupiter.api.Assertions.assertEquals(
+				1L,
+				jdbcClient.sql("select count(*) from import_batches where trading_account_id = ?")
+						.param(accountId).query(Long.class).single());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				2L,
+				jdbcClient.sql("select count(*) from trade_orders where trading_account_id = ?")
+						.param(accountId).query(Long.class).single());
+		long batchId = objectMapper.readTree(importedBatch.getResponse().getContentAsByteArray())
+				.path("result").path("importBatchId").asLong();
+		mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+						.delete("/api/v1/trading-accounts/{accountId}/imports/batches/{batchId}", accountId, batchId)
+						.with(user(USER)))
+				.andExpect(status().isNoContent());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				0L,
+				jdbcClient.sql("select count(*) from trades where trading_account_id = ?")
+						.param(accountId).query(Long.class).single());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				0L,
+				jdbcClient.sql("select count(*) from trade_orders where trading_account_id = ?")
+						.param(accountId).query(Long.class).single());
+	}
+
+	@Test
 	void tradesReportReplacesMatchingManualCloseWithoutLosingManualR() throws Exception {
 		long accountId = createAccount("Manual merge", EightcapFixture.LOGIN);
 		mockMvc.perform(post("/api/v1/trading-accounts/{accountId}/trades", accountId)
@@ -218,6 +357,76 @@ class EightcapImportIntegrationTests extends JwtTestProperties {
 						.with(user(USER)))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.totalR").value(2.5));
+	}
+
+	@Test
+	void deletingImportBatchRebuildsRemainingTradeDataAndRemovesLastBatchTrade() throws Exception {
+		long accountId = createAccount("Delete import batch", EightcapFixture.LOGIN);
+		List<String> firstRow = new ArrayList<>(reportRows("DELETE-1").getFirst());
+		firstRow.set(11, "-30.00");
+		List<String> secondRow = new ArrayList<>(firstRow);
+		secondRow.set(9, "2026-09-01 15:41:50");
+		secondRow.set(11, "-20.00");
+		List<String> cashRow = List.of(
+				"DELETE-CASH", EightcapFixture.LOGIN, "", "", "", "0", "0", "",
+				"", "2026-09-01 12:00:00", "", "100.00", "USD", "DEPOSIT");
+
+		byte[] firstReport = EightcapFixture.csvBytes(List.of(firstRow, cashRow), false);
+		JsonNode firstPreview = preview(accountId, "delete-first.csv", firstReport);
+		JsonNode firstImport = importFile(
+				accountId,
+				"delete-first.csv",
+				firstReport,
+				firstPreview.path("fileSha256").asString(),
+				false,
+				200);
+		byte[] secondReport = EightcapFixture.csvBytes(List.of(secondRow), false);
+		JsonNode secondPreview = preview(accountId, "delete-second.csv", secondReport);
+		JsonNode secondImport = importFile(
+				accountId,
+				"delete-second.csv",
+				secondReport,
+				secondPreview.path("fileSha256").asString(),
+				false,
+				200);
+		mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+						.delete("/api/v1/trading-accounts/{accountId}/imports/batches/{batchId}",
+								accountId, firstImport.path("importBatchId").asLong())
+						.with(user("other@example.test")))
+				.andExpect(status().isNotFound());
+		org.junit.jupiter.api.Assertions.assertEquals(2L, importBatchCountForAccount(accountId));
+
+		mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+						.delete("/api/v1/trading-accounts/{accountId}/imports/batches/{batchId}",
+								accountId, secondImport.path("importBatchId").asLong())
+						.with(user(USER)))
+				.andExpect(status().isNoContent());
+		assertSummary(List.of(accountId), 1, "-30.00", "0.00", "-30.00");
+		org.junit.jupiter.api.Assertions.assertEquals(
+				1L,
+				jdbcClient.sql("select count(*) from trade_closes where trading_account_id = ?")
+						.param(accountId)
+						.query(Long.class)
+						.single());
+
+		mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+						.delete("/api/v1/trading-accounts/{accountId}/imports/batches/{batchId}",
+								accountId, firstImport.path("importBatchId").asLong())
+						.with(user(USER)))
+				.andExpect(status().isNoContent());
+		assertSummary(List.of(accountId), 0, "0.00", "0.00", "0.00");
+		org.junit.jupiter.api.Assertions.assertEquals(
+				0L,
+				jdbcClient.sql("select count(*) from trade_closes where trading_account_id = ?")
+						.param(accountId)
+						.query(Long.class)
+						.single());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				0L,
+				jdbcClient.sql("select count(*) from account_transactions where trading_account_id = ?")
+						.param(accountId)
+						.query(Long.class)
+						.single());
 	}
 
 	@Test
@@ -635,6 +844,21 @@ private void assertTradingViewImports() throws Exception {
 		JsonNode firstPreview = previewTradingView(overlapAccount, "orders-1.csv", firstSnapshot);
 		org.junit.jupiter.api.Assertions.assertEquals(199, firstPreview.path("totalRows").asInt());
 		org.junit.jupiter.api.Assertions.assertEquals(199, firstPreview.path("newOrders").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(0, firstPreview.path("cashRows").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(0, firstPreview.path("errorRows").asInt());
+		String malformedTradingView = String.join("\n",
+				"Symbol,Side,Type,Qty,Filled Qty,Limit Price,Stop Price,Avg Fill Price,Status,Update Time,Position ID,Commission,Closed P&L,Net Closed P&L,Order ID",
+				"XAUUSD,Buy,Market,invalid,0.2,,,100,Filled,2026-10-10 22:00:00,XAUUSD:9901,0,,,9901");
+		long batchesBeforeMalformedTvPreview = importBatchCount();
+		mockMvc.perform(multipart("/api/v1/trading-accounts/{id}/imports/tradingview/preview", overlapAccount)
+						.file(file(
+								"malformed-tradingview.csv",
+								malformedTradingView.getBytes(StandardCharsets.UTF_8)))
+						.with(user(USER)))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errorRows").value(1))
+				.andExpect(jsonPath("$.errors[0]").value(org.hamcrest.Matchers.containsString("line 2")));
+		org.junit.jupiter.api.Assertions.assertEquals(batchesBeforeMalformedTvPreview, importBatchCount());
 		importTradingView(overlapAccount, "orders-1.csv", firstSnapshot, firstPreview.path("fileSha256").asString());
 		long batchesBeforeInvalidTvImports = importBatchCount();
 		mockMvc.perform(multipart("/api/v1/trading-accounts/{id}/imports/tradingview", overlapAccount)
@@ -950,6 +1174,7 @@ private void assertTradingViewImports() throws Exception {
 								"file", "malformed.csv", "text/csv", malformed.getBytes(StandardCharsets.UTF_8)))
 						.with(user(USER)))
 				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errorRows").value(1))
 				.andExpect(jsonPath("$.errors[0]").value(org.hamcrest.Matchers.containsString("line 3, Profit")));
 		org.junit.jupiter.api.Assertions.assertEquals(batchesBefore, importBatchCount());
 		long tradesBefore = jdbcClient.sql("select count(*) from trades").query(Long.class).single();
@@ -965,6 +1190,13 @@ private void assertTradingViewImports() throws Exception {
 
 	private long importBatchCount() {
 		return jdbcClient.sql("select count(*) from import_batches").query(Long.class).single();
+	}
+
+	private long importBatchCountForAccount(long accountId) {
+		return jdbcClient.sql("select count(*) from import_batches where trading_account_id = ?")
+				.param(accountId)
+				.query(Long.class)
+				.single();
 	}
 
 	private MockMultipartFile file(String filename, byte[] content) {
