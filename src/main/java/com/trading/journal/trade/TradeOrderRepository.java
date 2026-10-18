@@ -28,4 +28,6 @@ public interface TradeOrderRepository extends JpaRepository<TradeOrderEntity, Lo
 			Long tradingAccountId,
 			Collection<Long> tradeIds);
 
+	List<TradeOrderEntity> findAllByImportBatchId(Long importBatchId);
+
 }

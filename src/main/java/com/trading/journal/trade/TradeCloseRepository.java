@@ -19,4 +19,6 @@ public interface TradeCloseRepository extends JpaRepository<TradeCloseEntity, Lo
 			Long tradeId,
 			String source);
 
+	List<TradeCloseEntity> findAllByImportBatchId(Long importBatchId);
+
 }

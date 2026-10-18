@@ -15,6 +15,7 @@ public class TradingViewReportExceptionHandler {
 				exception.getMessage());
 		problem.setTitle("Invalid TradingView report");
 		problem.setProperty("errors", exception.errors());
+		problem.setProperty("errorRows", exception.errorRows());
 		return problem;
 	}
 

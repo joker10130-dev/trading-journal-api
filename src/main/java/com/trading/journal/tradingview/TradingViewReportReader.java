@@ -88,7 +88,7 @@ public class TradingViewReportReader {
 			}
 			if (errorCount > 0) {
 				throw new TradingViewReportException(
-						errorCount + " malformed data row(s); no rows were imported.", errors);
+						errorCount + " malformed data row(s); no rows were imported.", errors, errorCount);
 			}
 			if (orders.isEmpty()) {
 				throw new TradingViewReportException("The report contains no data rows.");

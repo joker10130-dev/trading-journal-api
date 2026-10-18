@@ -197,6 +197,33 @@ public class TradeEntity {
 		this.rSource = "NONE";
 	}
 
+	public void rebuildImportedSummary(
+			String symbol,
+			String side,
+			String status,
+			LocalDateTime openTimeServer,
+			Instant openedAt,
+			BigDecimal openPrice,
+			BigDecimal openedVolume,
+			BigDecimal grossPnl,
+			BigDecimal feesAndSwap,
+			BigDecimal netPnl,
+			boolean hasTradesReport,
+			boolean hasTradingViewData) {
+		this.symbol = symbol;
+		this.side = side;
+		this.status = status;
+		this.openTimeServer = openTimeServer;
+		this.openedAt = openedAt;
+		this.openPrice = openPrice;
+		this.openedVolume = openedVolume;
+		this.grossPnl = grossPnl;
+		this.feesAndSwap = feesAndSwap;
+		this.netPnl = netPnl;
+		this.hasTradesReport = hasTradesReport;
+		this.hasTradingViewData = hasTradingViewData;
+	}
+
 	public void replaceWithTradesReport(
 			String symbol,
 			String side,

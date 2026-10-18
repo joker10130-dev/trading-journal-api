@@ -1,6 +1,7 @@
 package com.trading.journal.eightcap;
 
 import java.io.IOException;
+import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,6 +28,30 @@ public class EightcapImportController {
 			@PathVariable Long accountId,
 			@RequestPart("file") MultipartFile file) {
 		return imports.preview(accountId, file.getOriginalFilename(), bytes(file));
+	}
+
+	@PostMapping(path = "/batch/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+	public EightcapImportService.MultiFilePreview previewFiles(
+			@PathVariable Long accountId,
+			@RequestPart("files") List<MultipartFile> files) {
+		return imports.previewFiles(accountId, files.stream()
+				.map(file -> new EightcapImportService.BatchFile(file.getOriginalFilename(), bytes(file)))
+				.toList());
+	}
+
+	@PostMapping(path = "/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+	public EightcapImportService.MultiFileImportResult importFiles(
+			@PathVariable Long accountId,
+			@RequestPart("files") List<MultipartFile> files,
+			@RequestParam("sha256s") List<String> sha256s,
+			@RequestParam(defaultValue = "false") boolean acknowledgeLoginMismatch) {
+		return imports.importFiles(
+				accountId,
+				files.stream()
+						.map(file -> new EightcapImportService.BatchFile(file.getOriginalFilename(), bytes(file)))
+						.toList(),
+				sha256s,
+				acknowledgeLoginMismatch);
 	}
 
 	@PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

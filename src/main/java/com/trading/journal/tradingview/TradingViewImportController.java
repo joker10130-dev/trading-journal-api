@@ -1,6 +1,7 @@
 package com.trading.journal.tradingview;
 
 import java.io.IOException;
+import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,6 +28,28 @@ public class TradingViewImportController {
 			@PathVariable Long accountId,
 			@RequestPart("file") MultipartFile file) {
 		return imports.preview(accountId, file.getOriginalFilename(), bytes(file));
+	}
+
+	@PostMapping(path = "/batch/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+	public TradingViewImportService.MultiFilePreview previewFiles(
+			@PathVariable Long accountId,
+			@RequestPart("files") List<MultipartFile> files) {
+		return imports.previewFiles(accountId, files.stream()
+				.map(file -> new TradingViewImportService.BatchFile(file.getOriginalFilename(), bytes(file)))
+				.toList());
+	}
+
+	@PostMapping(path = "/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+	public TradingViewImportService.MultiFileImportResult importFiles(
+			@PathVariable Long accountId,
+			@RequestPart("files") List<MultipartFile> files,
+			@RequestParam("sha256s") List<String> sha256s) {
+		return imports.importFiles(
+				accountId,
+				files.stream()
+						.map(file -> new TradingViewImportService.BatchFile(file.getOriginalFilename(), bytes(file)))
+						.toList(),
+				sha256s);
 	}
 
 	@PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

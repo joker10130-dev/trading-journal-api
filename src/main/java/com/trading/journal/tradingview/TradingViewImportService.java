@@ -18,6 +18,7 @@ import com.trading.journal.account.CurrentUserService;
 import com.trading.journal.account.TradingAccountEntity;
 import com.trading.journal.account.TradingAccountRepository;
 import com.trading.journal.account.UserEntity;
+import com.trading.journal.imports.CsvBatchComposer;
 import com.trading.journal.imports.ImportBatchEntity;
 import com.trading.journal.imports.ImportBatchRepository;
 import com.trading.journal.trade.TradeCloseEntity;
@@ -36,6 +37,12 @@ import org.springframework.web.server.ResponseStatusException;
 public class TradingViewImportService {
 
 	private static final short TRADINGVIEW_UTC_OFFSET_MINUTES = 7 * 60;
+	private static final int MAX_BATCH_FILES = 5;
+	private static final long MAX_BATCH_BYTES = 50L * 1024 * 1024;
+	private static final List<String> BATCH_CSV_HEADERS = List.of(
+			"Symbol", "Side", "Type", "Qty", "Filled Qty", "Limit Price", "Stop Price",
+			"Avg Fill Price", "Status", "Update Time", "Position ID", "Commission",
+			"Closed P&L", "Net Closed P&L", "Order ID");
 
 	private final CurrentUserService currentUserService;
 	private final TradingAccountRepository accounts;
@@ -86,7 +93,18 @@ public class TradingViewImportService {
 				importedOrders.size(),
 				newPositionTickets.size(),
 				existingTrades.size(),
-				(int) uniqueOrders.stream().filter(order -> !order.isFilled()).count());
+				(int) uniqueOrders.stream().filter(order -> !order.isFilled()).count(),
+				0,
+				0);
+	}
+
+	@Transactional(readOnly = true)
+	public MultiFilePreview previewFiles(Long accountId, List<BatchFile> files) {
+		UserEntity user = currentUserService.requireCurrentUser();
+		requireOwnedAccount(accountId, user.getId());
+		ComposedBatch composed = composeBatch(files);
+		ImportPreview preview = preview(accountId, composed.filename(), composed.content());
+		return new MultiFilePreview(composed.files(), preview);
 	}
 
 	@Transactional
@@ -178,6 +196,75 @@ public class TradingViewImportService {
 				importedOrders.size(),
 				newTradeCount,
 				nonTradeRows);
+	}
+
+	@Transactional
+	public MultiFileImportResult importFiles(
+			Long accountId,
+			List<BatchFile> files,
+			List<String> expectedSha256s) {
+		UserEntity user = currentUserService.requireCurrentUser();
+		accounts.findByIdAndUserIdForUpdate(accountId, user.getId())
+				.orElseThrow(() -> new ResponseStatusException(
+						HttpStatus.NOT_FOUND, "Trading account was not found."));
+		ComposedBatch composed = composeBatch(files);
+		if (expectedSha256s == null || expectedSha256s.size() != composed.files().size()) {
+			throw new ResponseStatusException(
+					HttpStatus.CONFLICT, "Preview every file in the batch before importing.");
+		}
+		for (int i = 0; i < composed.files().size(); i++) {
+			String expectedSha256 = expectedSha256s.get(i);
+			String actualSha256 = composed.files().get(i).fileSha256();
+			if (expectedSha256 == null || !MessageDigest.isEqual(
+					actualSha256.getBytes(StandardCharsets.US_ASCII),
+					expectedSha256.trim().toLowerCase(Locale.ROOT).getBytes(StandardCharsets.US_ASCII))) {
+				throw new ResponseStatusException(
+						HttpStatus.CONFLICT,
+						"One or more uploaded files changed after preview. Preview the batch again before importing.");
+			}
+		}
+		ImportResult result = importReport(
+				accountId, composed.filename(), composed.content(), composed.fileSha256());
+		return new MultiFileImportResult(composed.files(), result);
+	}
+
+	private ComposedBatch composeBatch(List<BatchFile> files) {
+		if (files == null || files.isEmpty() || files.size() > MAX_BATCH_FILES) {
+			throw new ResponseStatusException(
+					HttpStatus.BAD_REQUEST, "A batch must contain between 1 and 5 TradingView files.");
+		}
+		long totalBytes = files.stream().mapToLong(file -> file.content().length).sum();
+		if (totalBytes > MAX_BATCH_BYTES) {
+			throw new ResponseStatusException(
+					HttpStatus.BAD_REQUEST, "The combined upload exceeds the 50 MB batch limit.");
+		}
+
+		List<List<String>> rows = new ArrayList<>();
+		List<BatchFileInfo> fileInfos = new ArrayList<>();
+		for (BatchFile file : files) {
+			TradingViewReportReader.ParsedTradingViewReport report = reader.read(file.filename(), file.content());
+			fileInfos.add(new BatchFileInfo(report.filename(), report.fileSha256(), report.orders().size()));
+			for (TradingViewOrder order : report.orders()) {
+				rows.add(BATCH_CSV_HEADERS.stream()
+						.map(column -> order.rawRow().getOrDefault(column, ""))
+						.toList());
+			}
+		}
+		String filename = files.size() + "-files.csv";
+		byte[] combined = CsvBatchComposer.compose(BATCH_CSV_HEADERS, rows);
+		return new ComposedBatch(
+				filename,
+				combined,
+				java.util.HexFormat.of().formatHex(sha256(combined)),
+				List.copyOf(fileInfos));
+	}
+
+	private byte[] sha256(byte[] content) {
+		try {
+			return MessageDigest.getInstance("SHA-256").digest(content);
+		} catch (java.security.NoSuchAlgorithmException exception) {
+			throw new IllegalStateException("SHA-256 is unavailable.", exception);
+		}
 	}
 
 	private Map<String, TradeOrderEntity> findAndValidateExistingOrders(
@@ -464,6 +551,25 @@ public class TradingViewImportService {
 				: localTime.minusMinutes(TRADINGVIEW_UTC_OFFSET_MINUTES).toInstant(ZoneOffset.UTC);
 	}
 
+	public record BatchFile(String filename, byte[] content) {
+	}
+
+	public record BatchFileInfo(String filename, String fileSha256, int totalRows) {
+	}
+
+	public record MultiFilePreview(List<BatchFileInfo> files, ImportPreview preview) {
+	}
+
+	public record MultiFileImportResult(List<BatchFileInfo> files, ImportResult result) {
+	}
+
+	private record ComposedBatch(
+			String filename,
+			byte[] content,
+			String fileSha256,
+			List<BatchFileInfo> files) {
+	}
+
 	private TradingAccountEntity requireOwnedAccount(Long accountId, Long userId) {
 		return accounts.findByIdAndUserId(accountId, userId)
 				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Trading account was not found."));
@@ -480,7 +586,9 @@ public class TradingViewImportService {
 			int alreadyImportedOrders,
 			int newTrades,
 			int existingTrades,
-			int nonTradeRows) {
+			int nonTradeRows,
+			int cashRows,
+			int errorRows) {
 	}
 
 	public record ImportResult(

@@ -133,7 +133,7 @@ public class EightcapReportReader {
 			}
 			if (errorCount > 0) {
 				throw new EightcapReportException(
-						errorCount + " malformed data row(s); no rows were imported.", errors);
+						errorCount + " malformed data row(s); no rows were imported.", errors, errorCount);
 			}
 			return rows;
 		}
@@ -488,7 +488,7 @@ public class EightcapReportReader {
 			}
 			if (errorCount > 0) {
 				throw new EightcapReportException(
-						errorCount + " malformed data row(s); no rows were imported.", errors);
+						errorCount + " malformed data row(s); no rows were imported.", errors, errorCount);
 			}
 			return rows;
 		}

@@ -123,9 +123,17 @@ class AuthIntegrationTests extends JwtTestProperties {
 				.andExpect(jsonPath("$.name").value("Private renamed"))
 				.andExpect(jsonPath("$.broker").value("Eightcap EU"))
 				.andExpect(jsonPath("$.currency").value("EUR"));
+		mockMvc.perform(post("/api/v1/trading-accounts")
+						.header("Authorization", "Bearer " + ownerToken)
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("""
+								{"name":"Second account","broker":"Eightcap","currency":"USD"}
+								"""))
+				.andExpect(status().isCreated());
 		mockMvc.perform(get("/api/v1/trading-accounts")
 						.header("Authorization", "Bearer " + ownerToken))
 				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.length()").value(2))
 				.andExpect(jsonPath("$[0].name").value("Private renamed"));
 		String otherToken = objectMapper.readTree(otherSignup.getResponse().getContentAsByteArray())
 				.path("accessToken")
