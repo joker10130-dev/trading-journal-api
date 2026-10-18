@@ -22,6 +22,8 @@ public class SecurityConfiguration {
 								"/api/v1/auth/sign-in",
 								"/api/v1/auth/refresh",
 								"/api/v1/auth/sign-out",
+								"/api/v1/auth/password-reset/request",
+								"/api/v1/auth/password-reset/confirm",
 								"/actuator/health")
 						.permitAll()
 						.anyRequest()
