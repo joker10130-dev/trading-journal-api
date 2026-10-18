@@ -67,9 +67,7 @@ Create an Eightcap account:
   "broker": "Eightcap",
   "currency": "USD",
   "brokerLogin": "optional broker login",
-  "tradesReportUtcOffsetMinutes": 180,
-  "defaultRiskMode": "FIXED_AMOUNT",
-  "defaultRiskValue": 10
+  "tradesReportUtcOffsetMinutes": 180
 }
 ```
 
@@ -90,26 +88,23 @@ return `ProblemDetail` errors with row numbers and make no writes.
 Trade totals are available through
 `GET /api/v1/trading-accounts/summary?accountIds={id1},{id2}`. Trades Report close
 times remain broker-local unless the account has an explicit UTC offset.
-Set or change an existing account's fallback rule with
-`PUT /api/v1/trading-accounts/{accountId}/risk-rule`; this recalculates R for
-already imported trades. Send both `defaultRiskMode` and `defaultRiskValue`, or
-send both as `null` to clear the rule.
 
-Report-based daily, monthly, and total P&L/R are available through
+Daily, monthly, and total P&L/R are available through
 `GET /api/v1/trading-accounts/summary/performance?accountIds={id1},{id2}`.
 Daily and monthly dates use the account owner's timezone. The response separates
-trades with and without calculated R and reports closes without a resolved UTC
+trades with and without manually entered R and reports closes without a resolved UTC
 timestamp, so missing report data is not presented as a valid zero.
 
-R uses each imported close's net P&L divided by the position's monetary risk.
-The calculator prefers one unambiguous linked stop order, then the account's
-default risk rule. `FIXED_AMOUNT` is currency risk per position;
-`FIXED_STOP_DISTANCE` is price distance multiplied by report-inferred value per
-price unit and opened volume. A stop on the profitable side, less than half the
-median adverse-side stop distance for that symbol, or multiple linked stop
-prices sets `SL_MAY_HAVE_MOVED`. The calculator avoids using flagged stops and
-uses the account rule if configured. If the report cannot establish risk, R
-remains unavailable and the response reports that trade under `tradesWithoutR`.
+Create a closed manual trade with `POST /api/v1/trading-accounts/{accountId}/trades`.
+Times are local to the user's timezone. An optional `rMultiple` is entered
+directly by the user. Manual closes are included in the same performance
+summaries as imported closes.
+
+R is never calculated from imported files. Set or edit it with
+`PUT /api/v1/trades/{tradeId}/r` and `{"rMultiple": 1.5}`; send
+`{"rMultiple": null}` to clear it. R is split across a trade's closes by volume
+for performance totals. Values with `|R| > 5` receive the informational
+`R_ABSOLUTE_OVER_5` flag without being changed.
 
 ## TradingView Order History PoC
 

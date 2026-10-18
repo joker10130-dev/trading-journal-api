@@ -26,10 +26,27 @@ public class TradeManualRService {
 	public TradeEntity setManualR(Long tradeId, Long userId, BigDecimal rMultiple) {
 		TradeEntity trade = trades.findByIdAndUserId(tradeId, userId)
 				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Trade was not found."));
-		BigDecimal r = rMultiple.setScale(R_SCALE, RoundingMode.HALF_UP);
-		trade.applyManualR(r);
-		distribute(r, tradeCloses.findAllByTradingAccountIdAndTradeId(trade.getTradingAccountId(), trade.getId()));
+		List<TradeCloseEntity> closes =
+				tradeCloses.findAllByTradingAccountIdAndTradeId(trade.getTradingAccountId(), trade.getId());
+		if (rMultiple == null) {
+			trade.clearManualR();
+			closes.forEach(close -> close.updateRMultiple(null));
+		} else {
+			BigDecimal r = rMultiple.setScale(R_SCALE, RoundingMode.HALF_UP);
+			trade.applyManualR(r);
+			distribute(r, closes);
+		}
 		return trades.save(trade);
+	}
+
+	@Transactional
+	public void redistributeManualR(TradeEntity trade) {
+		if ("MANUAL".equals(trade.getRSource()) && trade.getRMultiple() != null) {
+			distribute(
+					trade.getRMultiple(),
+					tradeCloses.findAllByTradingAccountIdAndTradeId(
+							trade.getTradingAccountId(), trade.getId()));
+		}
 	}
 
 	// Closes feed the performance summaries, so the manual R is split by volume; the last close takes the remainder.

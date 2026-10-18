@@ -3,6 +3,7 @@ package com.trading.journal.trade;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -33,7 +34,7 @@ public class TradeCloseEntity {
 	@Column(name = "trade_id", nullable = false)
 	private Long tradeId;
 
-	@Column(name = "import_batch_id", nullable = false)
+	@Column(name = "import_batch_id")
 	private Long importBatchId;
 
 	@Column(nullable = false, length = 24)
@@ -119,6 +120,34 @@ public class TradeCloseEntity {
 		this.swaps = swaps;
 		this.commission = commission;
 		this.netPnl = netPnl;
+	}
+
+	public TradeCloseEntity(
+			Long userId,
+			Long tradingAccountId,
+			Long tradeId,
+			String sourceFingerprint,
+			BigDecimal volume,
+			Instant closedAt,
+			BigDecimal closePrice,
+			BigDecimal grossPnl,
+			BigDecimal swaps,
+			BigDecimal commission,
+			BigDecimal netPnl,
+			BigDecimal rMultiple) {
+		this.userId = userId;
+		this.tradingAccountId = tradingAccountId;
+		this.tradeId = tradeId;
+		this.source = "MANUAL";
+		this.sourceFingerprint = sourceFingerprint;
+		this.volume = volume;
+		this.closedAt = closedAt;
+		this.closePrice = closePrice;
+		this.grossPnl = grossPnl;
+		this.swaps = swaps;
+		this.commission = commission;
+		this.netPnl = netPnl;
+		this.rMultiple = rMultiple;
 	}
 
 	public void updateRMultiple(BigDecimal rMultiple) {

@@ -3,6 +3,7 @@ package com.trading.journal.trade;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -30,7 +31,7 @@ public class TradeEntity {
 	@Column(name = "trading_account_id", nullable = false)
 	private Long tradingAccountId;
 
-	@Column(nullable = false, length = 64)
+	@Column(length = 64)
 	private String ticket;
 
 	@Column(nullable = false, length = 32)
@@ -54,15 +55,6 @@ public class TradeEntity {
 
 	@Column(name = "opened_volume", precision = 18, scale = 5)
 	private BigDecimal openedVolume;
-
-	@Column(name = "initial_sl_price", precision = 18, scale = 5)
-	private BigDecimal initialSlPrice;
-
-	@Column(name = "risk_amount", precision = 18, scale = 5)
-	private BigDecimal riskAmount;
-
-	@Column(name = "risk_source", nullable = false, length = 24)
-	private String riskSource;
 
 	@Column(name = "r_multiple", precision = 18, scale = 8)
 	private BigDecimal rMultiple;
@@ -121,13 +113,46 @@ public class TradeEntity {
 		this.openedAt = openedAt;
 		this.openPrice = openPrice;
 		this.openedVolume = BigDecimal.ZERO;
-		this.riskSource = "NONE";
 		this.rSource = "NONE";
 		this.grossPnl = BigDecimal.ZERO;
 		this.feesAndSwap = BigDecimal.ZERO;
 		this.netPnl = BigDecimal.ZERO;
 		this.hasTradesReport = hasTradesReport;
 		this.hasTradingViewData = hasTradingViewData;
+	}
+
+	public TradeEntity(
+			Long userId,
+			Long tradingAccountId,
+			String ticket,
+			String symbol,
+			String side,
+			Instant openedAt,
+			BigDecimal openPrice,
+			BigDecimal openedVolume,
+			BigDecimal grossPnl,
+			BigDecimal feesAndSwap,
+			BigDecimal netPnl,
+			BigDecimal rMultiple) {
+		this.userId = userId;
+		this.tradingAccountId = tradingAccountId;
+		this.ticket = ticket;
+		this.symbol = symbol;
+		this.side = side;
+		this.status = "CLOSED";
+		this.openedAt = openedAt;
+		this.openPrice = openPrice;
+		this.openedVolume = openedVolume;
+		this.grossPnl = grossPnl;
+		this.feesAndSwap = feesAndSwap;
+		this.netPnl = netPnl;
+		this.hasTradesReport = false;
+		this.hasTradingViewData = false;
+		if (rMultiple == null) {
+			this.rSource = "NONE";
+		} else {
+			applyManualR(rMultiple);
+		}
 	}
 
 	public void replaceTradingViewData(
@@ -158,25 +183,18 @@ public class TradeEntity {
 		this.hasTradingViewData = true;
 	}
 
-	public void updateRisk(
-			BigDecimal initialSlPrice,
-			BigDecimal riskAmount,
-			String riskSource,
-			BigDecimal rMultiple,
-			String rFlag,
-			String rSource) {
-		this.initialSlPrice = initialSlPrice;
-		this.riskAmount = riskAmount;
-		this.riskSource = riskSource;
-		this.rMultiple = rMultiple;
-		this.rFlag = rFlag;
-		this.rSource = rSource;
-	}
-
 	public void applyManualR(BigDecimal rMultiple) {
 		this.rMultiple = rMultiple;
-		this.rFlag = null;
+		this.rFlag = rMultiple.abs().compareTo(BigDecimal.valueOf(5)) > 0
+				? "R_ABSOLUTE_OVER_5"
+				: null;
 		this.rSource = "MANUAL";
+	}
+
+	public void clearManualR() {
+		this.rMultiple = null;
+		this.rFlag = null;
+		this.rSource = "NONE";
 	}
 
 	public void replaceWithTradesReport(

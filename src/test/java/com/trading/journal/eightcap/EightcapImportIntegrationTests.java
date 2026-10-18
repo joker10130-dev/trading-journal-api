@@ -170,6 +170,56 @@ class EightcapImportIntegrationTests {
 	}
 
 	@Test
+	void tradesReportReplacesMatchingManualCloseWithoutLosingManualR() throws Exception {
+		long accountId = createAccount("Manual merge", EightcapFixture.LOGIN);
+		mockMvc.perform(post("/api/v1/trading-accounts/{accountId}/trades", accountId)
+						.contentType("application/json")
+						.content("""
+								{
+								  "ticket": "T-0001",
+								  "symbol": "XAUUSD",
+								  "side": "LONG",
+								  "volume": 0.01,
+								  "openedAt": "2026-09-01T09:00:00",
+								  "closedAt": "2026-09-01T10:00:00",
+								  "openPrice": 4380,
+								  "closePrice": 4390,
+								  "profit": 10,
+								  "swaps": 0,
+								  "commission": 0,
+								  "rMultiple": 2.5
+								}
+								""")
+						.with(user(USER)))
+				.andExpect(status().isCreated());
+
+		byte[] report = EightcapFixture.csvBytes(reportRows("T-0001"), false);
+		JsonNode preview = preview(accountId, "manual-match.csv", report);
+		JsonNode result = importFile(
+				accountId, "manual-match.csv", report, preview.path("fileSha256").asString(), false, 200);
+
+		org.junit.jupiter.api.Assertions.assertEquals(1, result.path("importedTradeCloses").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				1L,
+				jdbcClient.sql("select count(*) from trade_closes where trading_account_id = ?")
+						.param(accountId)
+						.query(Long.class)
+						.single());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				0L,
+				jdbcClient.sql("select count(*) from trade_closes where trading_account_id = ? and source = 'MANUAL'")
+						.param(accountId)
+						.query(Long.class)
+						.single());
+		assertSummary(List.of(accountId), 1, "-30.00", "0.00", "-30.00");
+		mockMvc.perform(get("/api/v1/trading-accounts/summary/performance")
+						.param("accountIds", Long.toString(accountId))
+						.with(user(USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.totalR").value(2.5));
+	}
+
+	@Test
 	void warnsWhenImportedTradesHaveNoOverlapWithExistingTrades() throws Exception {
 		long accountId = createAccount("No overlap", EightcapFixture.LOGIN);
 		byte[] existingReport = EightcapFixture.csvBytes(reportRows("EXISTING-1"), false);
@@ -255,39 +305,48 @@ class EightcapImportIntegrationTests {
 
 	@Test
 	void summarizesImportedReportPnlAndRByUserTimezone() throws Exception {
-		long accountId = createAccount(
-				"Performance",
-				EightcapFixture.LOGIN,
-				USER,
-				(short) 180,
-				null,
-				null);
+		long accountId = createAccount("Performance", EightcapFixture.LOGIN, USER, (short) 180);
 		JsonNode preview = preview(accountId, "september.csv", septemberCsv);
 		importFile(accountId, "september.csv", septemberCsv, preview.path("fileSha256").asString(), false, 200);
-		mockMvc.perform(put("/api/v1/trading-accounts/{id}/risk-rule", accountId)
+
+		long firstTradeId = jdbcClient.sql(
+						"select id from trades where trading_account_id = ? and ticket = 'T-0001'")
+				.param(accountId).query(Long.class).single();
+		long secondTradeId = jdbcClient.sql(
+						"select id from trades where trading_account_id = ? and ticket = 'T-0002'")
+				.param(accountId).query(Long.class).single();
+		mockMvc.perform(put("/api/v1/trades/{id}/r", firstTradeId)
 						.with(user(USER))
 						.contentType("application/json")
-						.content(objectMapper.writeValueAsBytes(
-								new RiskRuleRequest("FIXED_AMOUNT", new BigDecimal("10")))))
+						.content("{\"rMultiple\": 5.5}"))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.defaultRiskMode").value("FIXED_AMOUNT"))
-				.andExpect(jsonPath("$.defaultRiskValue").value(10));
+				.andExpect(jsonPath("$.rSource").value("MANUAL"))
+				.andExpect(jsonPath("$.rFlag").value("R_ABSOLUTE_OVER_5"));
+		mockMvc.perform(put("/api/v1/trades/{id}/r", secondTradeId)
+						.with(user(USER))
+						.contentType("application/json")
+						.content("{\"rMultiple\": -1.5}"))
+				.andExpect(status().isOk());
+		assertTradeR(accountId, "T-0001", "MANUAL", "5.50000000", "R_ABSOLUTE_OVER_5");
+		assertTradeR(accountId, "T-0002", "MANUAL", "-1.50000000", null);
 
 		mockMvc.perform(get("/api/v1/trading-accounts/summary/performance")
 						.param("accountIds", Long.toString(accountId))
 						.with(user(USER)))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.netPnl").value(-647.78))
-				.andExpect(jsonPath("$.totalR").value(0))
+				.andExpect(jsonPath("$.totalR").value(4))
 				.andExpect(jsonPath("$.tradeCount").value(22))
-				.andExpect(jsonPath("$.tradesWithR").value(0))
-				.andExpect(jsonPath("$.tradesWithoutR").value(22))
+				.andExpect(jsonPath("$.tradesWithR").value(2))
+				.andExpect(jsonPath("$.tradesWithoutR").value(20))
 				.andExpect(jsonPath("$.monthly.length()").value(1))
 				.andExpect(jsonPath("$.monthly[0].month").value("2026-09-01"))
 				.andExpect(jsonPath("$.monthly[0].netPnl").value(-647.78))
-				.andExpect(jsonPath("$.monthly[0].totalR").value(0))
+				.andExpect(jsonPath("$.monthly[0].totalR").value(4))
 				.andExpect(jsonPath("$.daily.length()").value(22))
-				.andExpect(jsonPath("$.daily[0].date").value("2026-09-01"));
+				.andExpect(jsonPath("$.daily[0].date").value("2026-09-01"))
+				.andExpect(jsonPath("$.daily[0].totalR").value(5.5))
+				.andExpect(jsonPath("$.daily[1].totalR").value(-1.5));
 
 		createAccount("Other performance user", EightcapFixture.LOGIN, "other@example.test");
 		mockMvc.perform(get("/api/v1/trading-accounts/summary/performance")
@@ -298,7 +357,7 @@ class EightcapImportIntegrationTests {
 
 	@Test
 	void septemberTradesReportDailyPnlUsesThaiDatesForLateServerCloses() throws Exception {
-		long accountId = createAccount("September Thai daily totals", EightcapFixture.LOGIN, USER, (short) 180, null, null);
+		long accountId = createAccount("September Thai daily totals", EightcapFixture.LOGIN, USER, (short) 180);
 		List<List<String>> rows = List.of(
 				septemberTradeRow("SEP-01", "2026-09-01 10:40:00", "-52.52", "0"),
 				septemberTradeRow("SEP-02", "2026-09-04 07:00:01", "-40.04", "0"),
@@ -422,99 +481,8 @@ class EightcapImportIntegrationTests {
 	}
 
 	@Test
-	void btcAutoRUsesTheOnlyStop() throws Exception {
-		long accountId = createAccount("Auto R BTC", EightcapFixture.LOGIN);
-		importTradingViewRows(accountId, btcPosition(
-				stop("BTCUSD", "1250803570", "82400", "BTCUSD:1250803562")));
-		assertTradeR(accountId, "1250803562", "AUTO", "2.00000000", null);
-	}
-
-	@Test
-	void autoRUsesTheFirstStopWhenTheStopWasMoved() throws Exception {
-		long accountId = createAccount("Auto R moved stop", EightcapFixture.LOGIN);
-		importTradingViewRows(accountId, btcPosition(
-				stop("BTCUSD", "1250803561", "80000", "BTCUSD:1250803562"),
-				stop("BTCUSD", "1250803580", "82600", "BTCUSD:1250803562"),
-				stop("BTCUSD", "1250803570", "82400", "BTCUSD:1250803562"),
-				stop("BTCUSD", "1250803590", "82700", "BTCUSD:1250803562")));
-		assertTradeR(accountId, "1250803562", "AUTO", "2.00000000", null);
-	}
-
-	@Test
-	void missingStopLeavesRNullAndFlagsNoInitialStop() throws Exception {
-		long accountId = createAccount("Auto R no stop", EightcapFixture.LOGIN);
-		importTradingViewRows(accountId, btcPosition());
-		assertTradeR(accountId, "1250803562", "NONE", null, "no initial stop");
-	}
-
-	@Test
-	void secondPositionStopIsNotUsedForFirstPositionOnSameSymbol() throws Exception {
-		long accountId = createAccount("Auto R position boundary", EightcapFixture.LOGIN);
-		List<String> secondPositionStop = new ArrayList<>(stop("BTCUSD", "1201", "82400", ""));
-		secondPositionStop.set(1, "sElL");
-		secondPositionStop.set(2, "sToP");
-		importTradingViewRows(accountId, List.of(
-				tradingViewOrder(
-						"BTCUSD", "Buy", "Limit", "0.02", "0.02", "", "", "82900", "Filled",
-						"2026-10-10 22:00:00", "BTCUSD:1000", "0", "", "", "1000"),
-				tradingViewOrder(
-						"BTCUSD", "Sell", "Market", "0.02", "0.02", "", "", "83400", "Filled",
-						"2026-10-10 22:10:00", "BTCUSD:1000", "0", "10", "10", "1100"),
-				tradingViewOrder(
-						"BTCUSD", "Buy", "Limit", "0.02", "0.02", "", "", "82900", "Filled",
-						"2026-10-10 22:20:00", "BTCUSD:1200", "0", "", "", "1200"),
-				secondPositionStop,
-				tradingViewOrder(
-						"BTCUSD", "Sell", "Market", "0.02", "0.02", "", "", "83400", "Filled",
-						"2026-10-10 22:30:00", "BTCUSD:1200", "0", "20", "20", "1300")));
-
-		assertTradeR(accountId, "1000", "NONE", null, "no initial stop");
-		assertTradeR(accountId, "1200", "AUTO", "2.00000000", null);
-	}
-
-	@Test
-	void cancelledStopWithBlankPositionIdIsLinkedByOrderId() throws Exception {
-		long accountId = createAccount("Auto R blank position", EightcapFixture.LOGIN);
-		importTradingViewRows(accountId, btcPosition(stop("BTCUSD", "1250803570", "82400", "")));
-		assertTradeR(accountId, "1250803562", "AUTO", "2.00000000", null);
-	}
-
-	@Test
-	void unknownContractSizeLeavesRNullAndFlagsIt() throws Exception {
-		long accountId = createAccount("Auto R unknown size", EightcapFixture.LOGIN);
-		importTradingViewRows(accountId, List.of(
-				tradingViewOrder(
-						"EURUSD", "Buy", "Limit", "1", "1", "", "", "1.1000", "Filled",
-						"2026-10-10 22:00:00", "EURUSD:3000", "0", "", "", "3000"),
-				stop("EURUSD", "3001", "1.0900", ""),
-				tradingViewOrder(
-						"EURUSD", "Sell", "Market", "1", "1", "", "", "1.1100", "Filled",
-						"2026-10-10 22:50:00", "EURUSD:3000", "0", "100", "100", "3002")));
-		assertTradeR(accountId, "3000", "NONE", null, "unknown contract size");
-	}
-
-	@Test
-	void xauusdAutoRUsesContractSize100() throws Exception {
-		long accountId = createAccount("Auto R XAUUSD", EightcapFixture.LOGIN);
-		importTradingViewRows(accountId, List.of(
-				tradingViewOrder(
-						"XAUUSD", "Buy", "Market", "0.20", "0.20", "", "", "100", "Filled",
-						"2026-10-10 22:00:00", "XAUUSD:2000", "0", "", "", "2000"),
-				stop("XAUUSD", "2001", "95", "XAUUSD:2000"),
-				tradingViewOrder(
-						"XAUUSD", "Sell", "Market", "0.20", "0.20", "", "", "110", "Filled",
-						"2026-10-10 22:50:00", "XAUUSD:2000", "0", "200", "200", "2002")));
-		assertTradeR(accountId, "2000", "AUTO", "2.00000000", null);
-		org.junit.jupiter.api.Assertions.assertEquals(
-				"100.00000",
-				jdbcClient.sql("select risk_amount from trades where trading_account_id = ? and ticket = '2000'")
-						.param(accountId).query(String.class).single());
-	}
-
-	@Test
 	void tradesReportImportLeavesRNullAndSourceNone() throws Exception {
-		long accountId = createAccount(
-				"Report R none", EightcapFixture.LOGIN, USER, (short) 180, "FIXED_AMOUNT", new BigDecimal("10"));
+		long accountId = createAccount("Report R none", EightcapFixture.LOGIN, USER, (short) 180);
 		importTradesReportTrade(accountId, "801");
 		assertTradeR(accountId, "801", "NONE", null, null);
 		org.junit.jupiter.api.Assertions.assertNull(closeR(accountId, "801"));
@@ -530,11 +498,27 @@ class EightcapImportIntegrationTests {
 		mockMvc.perform(put("/api/v1/trades/{id}/r", tradeId)
 						.with(user(USER))
 						.contentType("application/json")
-						.content("{\"rMultiple\": 1.5}"))
+						.content("{\"rMultiple\": 5.5}"))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.rSource").value("MANUAL"));
+		assertTradeR(accountId, "802", "MANUAL", "5.50000000", "R_ABSOLUTE_OVER_5");
+		org.junit.jupiter.api.Assertions.assertEquals("5.50000000", closeR(accountId, "802"));
+
+		mockMvc.perform(put("/api/v1/trades/{id}/r", tradeId)
+						.with(user(USER))
+						.contentType("application/json")
+						.content("{\"rMultiple\": 1.5}"))
+				.andExpect(status().isOk());
 		assertTradeR(accountId, "802", "MANUAL", "1.50000000", null);
-		org.junit.jupiter.api.Assertions.assertEquals("1.50000000", closeR(accountId, "802"));
+
+		mockMvc.perform(put("/api/v1/trades/{id}/r", tradeId)
+						.with(user(USER))
+						.contentType("application/json")
+						.content("{\"rMultiple\": null}"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.rSource").value("NONE"));
+		assertTradeR(accountId, "802", "NONE", null, null);
+		org.junit.jupiter.api.Assertions.assertNull(closeR(accountId, "802"));
 
 		createAccount("Other R user", EightcapFixture.LOGIN, "other@example.test");
 		mockMvc.perform(put("/api/v1/trades/{id}/r", tradeId)
@@ -544,28 +528,59 @@ class EightcapImportIntegrationTests {
 				.andExpect(status().isNotFound());
 	}
 
-	private List<List<String>> btcPosition(List<String>... stops) {
-		List<List<String>> rows = new ArrayList<>();
-		rows.add(tradingViewOrder(
-				"BTCUSD", "Buy", "Limit", "0.02", "0.02", "", "", "82900", "Filled",
-				"2026-10-10 22:00:00", "BTCUSD:1250803562", "0", "", "", "1250803562"));
-		rows.addAll(List.of(stops));
-		rows.add(tradingViewOrder(
-				"BTCUSD", "Sell", "Market", "0.02", "0.02", "", "", "83400", "Filled",
-				"2026-10-10 22:50:00", "BTCUSD:1250803562", "0", "20", "20", "1250803600"));
-		return rows;
-	}
+	@Test
+	void manuallyEnteredRIsDistributedAcrossPartialClosesByVolume() throws Exception {
+		long accountId = createAccount("Partial close manual R", EightcapFixture.LOGIN, USER, (short) 180);
+		List<String> first = new ArrayList<>(reportRows("803").getFirst());
+		first.set(4, "0.01");
+		first.set(9, "2026-09-01 10:00:00");
+		first.set(11, "-10.00");
+		List<String> second = new ArrayList<>(reportRows("803").getFirst());
+		second.set(4, "0.03");
+		second.set(9, "2026-09-01 11:00:00");
+		second.set(11, "-20.00");
+		byte[] report = EightcapFixture.csvBytes(List.of(first, second), false);
+		JsonNode preview = preview(accountId, "partial-manual-r.csv", report);
+		importFile(
+				accountId,
+				"partial-manual-r.csv",
+				report,
+				preview.path("fileSha256").asString(),
+				false,
+				200);
+		long tradeId = jdbcClient.sql("select id from trades where trading_account_id = ? and ticket = '803'")
+				.param(accountId).query(Long.class).single();
 
-	private List<String> stop(String symbol, String orderId, String stopPrice, String positionId) {
-		return tradingViewOrder(
-				symbol, "Sell", "Stop", "0.02", "", "", stopPrice, "", "Cancelled",
-				"2026-10-10 22:01:00", positionId, "0", "", "", orderId);
+		mockMvc.perform(put("/api/v1/trades/{id}/r", tradeId)
+						.with(user(USER))
+						.contentType("application/json")
+						.content("{\"rMultiple\": 2}"))
+				.andExpect(status().isOk());
+
+		List<String> closeR = jdbcClient.sql("""
+						select r_multiple::text
+						from trade_closes
+						where trading_account_id = ? and trade_id = ?
+						order by id
+						""")
+				.param(accountId)
+				.param(tradeId)
+				.query(String.class)
+				.list();
+		org.junit.jupiter.api.Assertions.assertEquals(List.of("0.50000000", "1.50000000"), closeR);
+		mockMvc.perform(get("/api/v1/trading-accounts/summary/performance")
+						.param("accountIds", Long.toString(accountId))
+						.with(user(USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.totalR").value(2))
+				.andExpect(jsonPath("$.monthly[0].totalR").value(2))
+				.andExpect(jsonPath("$.daily[0].totalR").value(2));
 	}
 
 	private void importTradingViewRows(long accountId, List<List<String>> rows) throws Exception {
 		byte[] orders = tradingViewCsv(rows);
-		JsonNode preview = previewTradingView(accountId, "auto-r.csv", orders);
-		importTradingView(accountId, "auto-r.csv", orders, preview.path("fileSha256").asString());
+		JsonNode preview = previewTradingView(accountId, "tradingview.csv", orders);
+		importTradingView(accountId, "tradingview.csv", orders, preview.path("fileSha256").asString());
 	}
 
 	private void importTradesReportTrade(long accountId, String ticket) throws Exception {
@@ -842,18 +857,12 @@ private void assertTradingViewImports() throws Exception {
 	}
 
 	private long createAccount(String name, String login, String owner) throws Exception {
-		return createAccount(name, login, owner, null, null, null);
+		return createAccount(name, login, owner, null);
 	}
 
-	private long createAccount(
-			String name,
-			String login,
-			String owner,
-			Short offset,
-			String defaultRiskMode,
-			BigDecimal defaultRiskValue) throws Exception {
+	private long createAccount(String name, String login, String owner, Short offset) throws Exception {
 		byte[] body = objectMapper.writeValueAsBytes(
-				new CreateAccountRequest(name, "Eightcap", "USD", login, offset, defaultRiskMode, defaultRiskValue));
+				new CreateAccountRequest(name, "Eightcap", "USD", login, offset));
 		MvcResult result = mockMvc.perform(post("/api/v1/trading-accounts")
 						.with(user(owner))
 						.contentType("application/json")
@@ -969,12 +978,7 @@ private void assertTradingViewImports() throws Exception {
 			String broker,
 			String currency,
 			String brokerLogin,
-			Short tradesReportUtcOffsetMinutes,
-			String defaultRiskMode,
-			BigDecimal defaultRiskValue) {
-	}
-
-	private record RiskRuleRequest(String defaultRiskMode, BigDecimal defaultRiskValue) {
+			Short tradesReportUtcOffsetMinutes) {
 	}
 
 }

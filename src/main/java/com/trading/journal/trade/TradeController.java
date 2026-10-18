@@ -5,7 +5,6 @@ import com.trading.journal.account.CurrentUserService;
 import com.trading.journal.account.UserEntity;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Digits;
-import jakarta.validation.constraints.NotNull;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -28,13 +27,13 @@ public class TradeController {
 	public TradeRResponse updateR(@PathVariable Long tradeId, @Valid @RequestBody ManualRRequest request) {
 		UserEntity user = currentUserService.requireCurrentUser();
 		TradeEntity trade = manualR.setManualR(tradeId, user.getId(), request.rMultiple());
-		return new TradeRResponse(trade.getId(), trade.getRMultiple(), trade.getRSource());
+		return new TradeRResponse(trade.getId(), trade.getRMultiple(), trade.getRSource(), trade.getRFlag());
 	}
 
-	public record ManualRRequest(@NotNull @Digits(integer = 10, fraction = 8) BigDecimal rMultiple) {
+	public record ManualRRequest(@Digits(integer = 10, fraction = 8) BigDecimal rMultiple) {
 	}
 
-	public record TradeRResponse(Long id, BigDecimal rMultiple, String rSource) {
+	public record TradeRResponse(Long id, BigDecimal rMultiple, String rSource, String rFlag) {
 	}
 
 }

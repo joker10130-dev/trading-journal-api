@@ -22,8 +22,12 @@ public class UserEntity {
 	@Column(nullable = false, unique = true, length = 320)
 	private String email;
 
+	@Column(nullable = false, length = 64)
+	private String timezone;
+
 	public UserEntity(String email) {
 		this.email = email;
+		this.timezone = "Asia/Bangkok";
 	}
 
 }
