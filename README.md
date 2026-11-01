@@ -92,7 +92,7 @@ with `POST`, `PUT /api/v1/trading-accounts/{accountId}` and
 `GET /api/v1/trading-accounts`; accounts, trades, closes, cash transactions and
 import history are scoped to that user.
 Sign-up is open for the MVP; passwords must be at least 10 characters. Password
-reset email is planned with Resend and is not implemented yet.
+reset email uses Resend, configured with `RESEND_API_KEY` and `RESEND_FROM_EMAIL`.
 
 Create an Eightcap account:
 
