@@ -9,6 +9,7 @@ import com.trading.journal.account.AccountTransactionEntity;
 import com.trading.journal.account.AccountTransactionRepository;
 import com.trading.journal.account.TradingAccountEntity;
 import com.trading.journal.account.TradingAccountRepository;
+import com.trading.journal.context.TradeContextService;
 import com.trading.journal.trade.TradeCloseEntity;
 import com.trading.journal.trade.TradeCloseRepository;
 import com.trading.journal.trade.TradeEntity;
@@ -31,6 +32,7 @@ public class ImportBatchDeletionService {
 	private final TradeOrderRepository orders;
 	private final AccountTransactionRepository cashTransactions;
 	private final TradeManualRService manualR;
+	private final TradeContextService tradeContext;
 
 	public ImportBatchDeletionService(
 			TradingAccountRepository accounts,
@@ -39,7 +41,8 @@ public class ImportBatchDeletionService {
 			TradeCloseRepository closes,
 			TradeOrderRepository orders,
 			AccountTransactionRepository cashTransactions,
-			TradeManualRService manualR) {
+			TradeManualRService manualR,
+			TradeContextService tradeContext) {
 		this.accounts = accounts;
 		this.batches = batches;
 		this.trades = trades;
@@ -47,6 +50,7 @@ public class ImportBatchDeletionService {
 		this.orders = orders;
 		this.cashTransactions = cashTransactions;
 		this.manualR = manualR;
+		this.tradeContext = tradeContext;
 	}
 
 	@Transactional
@@ -109,6 +113,7 @@ public class ImportBatchDeletionService {
 			if (opening == null) {
 				closes.deleteAll(remainingCloses);
 				orders.deleteAll(remainingOrders);
+				tradeContext.purgeForHardDelete(trade.getId(), trade.getUserId());
 				trades.delete(trade);
 				return;
 			}
@@ -129,6 +134,7 @@ public class ImportBatchDeletionService {
 					trade, manualCloses, "CLOSED", sumVolume(manualCloses), false, false);
 		} else {
 			closes.deleteAll(remainingCloses);
+			tradeContext.purgeForHardDelete(trade.getId(), trade.getUserId());
 			trades.delete(trade);
 			return;
 		}

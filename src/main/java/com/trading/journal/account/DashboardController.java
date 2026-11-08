@@ -1,6 +1,7 @@
 package com.trading.journal.account;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -51,6 +52,7 @@ public class DashboardController {
 		List<DailyTotal> daily = dailyTotals(filter);
 		OverallTotal totals = overallTotals(filter);
 		WinCounts winCounts = winCounts(filter);
+		EmotionMeter emotionMeter = emotionMeter(filter);
 		List<DailyPoint> cumulative = cumulative(daily);
 		int dailyStreak = dailyStreak(daily);
 		LocalDate effectiveStart = range.startDate() == null
@@ -74,7 +76,36 @@ public class DashboardController {
 				daily,
 				cumulative,
 				weeklyTotals(daily, effectiveStart, range.endDate()),
-				availableSymbols(user.getId(), selectedAccountIds));
+				availableSymbols(user.getId(), selectedAccountIds),
+				emotionMeter);
+	}
+
+	private EmotionMeter emotionMeter(QueryFilter filter) {
+		EmotionCounts counts = jdbcClient.sql("""
+						select count(distinct t.id) filter (where exists (
+						           select 1 from trade_tag_mappings m
+						           join tags g on g.id = m.tag_id and g.user_id = m.user_id
+						           where m.trade_id = t.id and m.user_id = t.user_id
+						             and g.category = 'EMOTION' and g.sentiment = 'POSITIVE'
+						       )) as positive_trade_count,
+						       count(distinct t.id) filter (where exists (
+						           select 1 from trade_tag_mappings m
+						           join tags g on g.id = m.tag_id and g.user_id = m.user_id
+						           where m.trade_id = t.id and m.user_id = t.user_id
+						             and g.category = 'EMOTION'
+						       )) as emotion_trade_count
+						""" + filter.fromAndWhere())
+				.params(filter.parameters())
+				.query((rs, rowNum) -> new EmotionCounts(
+						rs.getLong("positive_trade_count"),
+						rs.getLong("emotion_trade_count")))
+				.single();
+		BigDecimal percentage = counts.emotionTradeCount() == 0
+				? BigDecimal.ZERO
+				: BigDecimal.valueOf(counts.positiveTradeCount())
+						.multiply(BigDecimal.valueOf(100))
+						.divide(BigDecimal.valueOf(counts.emotionTradeCount()), 1, RoundingMode.HALF_UP);
+		return new EmotionMeter(counts.positiveTradeCount(), counts.emotionTradeCount(), percentage);
 	}
 
 	private List<Long> validateAccountIds(Long userId, List<Long> accountIds) {
@@ -344,6 +375,9 @@ public class DashboardController {
 	private record WinCounts(long wins, long smalls, long losses) {
 	}
 
+	private record EmotionCounts(long positiveTradeCount, long emotionTradeCount) {
+	}
+
 	public record DashboardSummary(
 			Period period,
 			LocalDate startDate,
@@ -361,7 +395,11 @@ public class DashboardController {
 			List<DailyTotal> daily,
 			List<DailyPoint> cumulative,
 			List<WeeklyTotal> weekly,
-			List<String> availableSymbols) {
+			List<String> availableSymbols,
+			EmotionMeter emotionMeter) {
+	}
+
+	public record EmotionMeter(long positiveTradeCount, long emotionTradeCount, BigDecimal positivePercentage) {
 	}
 
 	public record DailyTotal(
