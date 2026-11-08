@@ -37,7 +37,7 @@ public class AccountSummaryController {
 				       coalesce(sum(fees_and_swap), 0) as fees_and_swap,
 				       coalesce(sum(net_pnl), 0) as net_pnl
 				from trades
-				where user_id = ?
+				where user_id = ? and deleted_at is null
 				""");
 		List<Object> parameters = new ArrayList<>();
 		parameters.add(user.getId());

@@ -45,6 +45,7 @@ public class AccountPerformanceController {
 						       coalesce(sum(c.net_pnl), 0) as net_pnl,
 						       coalesce(sum(c.r_multiple), 0) as total_r
 						from trade_closes c
+						join trades t on t.id = c.trade_id and t.user_id = c.user_id and t.deleted_at is null
 						where c.user_id = ?
 						""" + filter)
 				.params(parameters.toArray())
@@ -63,6 +64,7 @@ public class AccountPerformanceController {
 						       coalesce(sum(c.net_pnl), 0) as net_pnl,
 						       coalesce(sum(c.r_multiple), 0) as total_r
 						from trade_closes c
+						join trades t on t.id = c.trade_id and t.user_id = c.user_id and t.deleted_at is null
 						join users u on u.id = c.user_id
 						where c.user_id = ? and c.closed_at is not null
 						""" + filter + """
@@ -85,6 +87,7 @@ public class AccountPerformanceController {
 						       coalesce(sum(c.net_pnl), 0) as net_pnl,
 						       coalesce(sum(c.r_multiple), 0) as total_r
 						from trade_closes c
+						join trades t on t.id = c.trade_id and t.user_id = c.user_id and t.deleted_at is null
 						join users u on u.id = c.user_id
 						where c.user_id = ? and c.closed_at is not null
 						""" + filter + """

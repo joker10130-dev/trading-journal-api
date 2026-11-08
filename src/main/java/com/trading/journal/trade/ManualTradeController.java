@@ -15,6 +15,7 @@ import com.trading.journal.account.UserEntity;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -39,6 +40,27 @@ public class ManualTradeController {
 			@Valid @RequestBody CreateManualTradeRequest request) {
 		UserEntity user = currentUserService.requireCurrentUser();
 		return manualTradeService.create(accountId, user, new ManualTradeService.ManualTradeInput(
+				request.ticket(),
+				request.symbol(),
+				request.side(),
+				request.volume(),
+				request.openedAt(),
+				request.closedAt(),
+				request.openPrice(),
+				request.closePrice(),
+				request.profit(),
+				request.swaps(),
+				request.commission(),
+				request.rMultiple()));
+	}
+
+	@PutMapping("/{tradeId}")
+	public ManualTradeService.ManualTradeResult update(
+			@PathVariable Long accountId,
+			@PathVariable Long tradeId,
+			@Valid @RequestBody CreateManualTradeRequest request) {
+		UserEntity user = currentUserService.requireCurrentUser();
+		return manualTradeService.update(accountId, tradeId, user, new ManualTradeService.ManualTradeInput(
 				request.ticket(),
 				request.symbol(),
 				request.side(),

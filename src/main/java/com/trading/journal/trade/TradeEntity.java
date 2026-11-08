@@ -80,6 +80,9 @@ public class TradeEntity {
 	@Column(name = "has_tradingview_data", nullable = false)
 	private boolean hasTradingViewData;
 
+	@Column(name = "deleted_at")
+	private Instant deletedAt;
+
 	public TradeEntity(
 			Long userId,
 			Long tradingAccountId,
@@ -195,6 +198,36 @@ public class TradeEntity {
 		this.rMultiple = null;
 		this.rFlag = null;
 		this.rSource = "NONE";
+	}
+
+	public void updateManualTrade(
+			String ticket,
+			String symbol,
+			String side,
+			Instant openedAt,
+			BigDecimal openPrice,
+			BigDecimal openedVolume,
+			BigDecimal grossPnl,
+			BigDecimal feesAndSwap,
+			BigDecimal netPnl) {
+		this.ticket = ticket;
+		this.symbol = symbol;
+		this.side = side;
+		this.status = "CLOSED";
+		this.openedAt = openedAt;
+		this.openPrice = openPrice;
+		this.openedVolume = openedVolume;
+		this.grossPnl = grossPnl;
+		this.feesAndSwap = feesAndSwap;
+		this.netPnl = netPnl;
+	}
+
+	public void softDelete(Instant deletedAt) {
+		this.deletedAt = deletedAt;
+	}
+
+	public void restore() {
+		this.deletedAt = null;
 	}
 
 	public void rebuildImportedSummary(

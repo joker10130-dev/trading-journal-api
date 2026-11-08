@@ -1,6 +1,8 @@
 package com.trading.journal.eightcap;
 
+import java.math.BigDecimal;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.ZoneOffset;
@@ -41,6 +43,7 @@ public class EightcapImportService {
 
 	private static final int MAX_BATCH_FILES = 5;
 	private static final long MAX_BATCH_BYTES = 50L * 1024 * 1024;
+	private static final Duration POSSIBLE_DUPLICATE_WINDOW = Duration.ofMinutes(15);
 	private static final List<String> BATCH_CSV_HEADERS = List.of(
 			"Ticket", "Login", "Type", "Symbol", "Volume", "Swaps", "Commission",
 			"Open Time", "Open Price", "Close Time", "Close Price", "Profit", "Currency", "Comment");
@@ -103,11 +106,15 @@ public class EightcapImportService {
 				assessment.loginMismatch(),
 				assessment.nonTradeRows(),
 				0,
+				assessment.possibleManualTradeDuplicates(),
+				assessment.deletedTradeMatches(),
 				warnings(
 						report.rows().size(),
 						report.rows().size() - uniqueRows.size(),
 						assessment.loginMismatch(),
-						assessment.noExistingTradeOverlap()));
+						assessment.noExistingTradeOverlap(),
+						assessment.possibleManualTradeDuplicates(),
+						assessment.deletedTradeMatches()));
 	}
 
 	@Transactional(readOnly = true)
@@ -281,7 +288,9 @@ public class EightcapImportService {
 						report.rows().size(),
 						report.rows().size() - uniqueRows.size(),
 						assessment.loginMismatch(),
-						assessment.noExistingTradeOverlap()));
+						assessment.noExistingTradeOverlap(),
+						assessment.possibleManualTradeDuplicates(),
+						assessment.deletedTradeMatches()));
 	}
 
 	@Transactional
@@ -413,6 +422,10 @@ public class EightcapImportService {
 				.filter(row -> !existingCloseFingerprints.contains(row.fingerprint())).count();
 		int newCashTransactions = (int) cashRows.stream()
 				.filter(row -> !existingCashFingerprints.contains(row.fingerprint())).count();
+		int deletedTradeMatches = (int) existingTrades.values().stream()
+				.filter(trade -> trade.getDeletedAt() != null)
+				.count();
+		int possibleManualTradeDuplicates = countPossibleManualTradeDuplicates(account, tradeRows);
 		boolean accountHasTrades = trades.existsByTradingAccountId(account.getId());
 		boolean tradeOverlap = !existingTrades.isEmpty();
 		if (!tradeOverlap && accountHasTrades && !tradeRows.isEmpty()) {
@@ -439,9 +452,76 @@ public class EightcapImportService {
 				cashRows.size() - newCashTransactions,
 				loginMismatch,
 				!tradeRows.isEmpty() && accountHasTrades && !tradeOverlap,
+				possibleManualTradeDuplicates,
+				deletedTradeMatches,
 				existingTrades,
 				existingCloseFingerprints,
 				existingCashFingerprints);
+	}
+
+	private int countPossibleManualTradeDuplicates(
+			TradingAccountEntity account,
+			List<EightcapReportRow> reportRows) {
+		Short offsetMinutes = account.getTradesReportUtcOffsetMinutes();
+		if (offsetMinutes == null || reportRows.isEmpty()) {
+			return 0;
+		}
+
+		List<TradeEntity> manualTrades = trades
+				.findAllByTradingAccountIdAndTicketIsNullAndDeletedAtIsNull(account.getId())
+				.stream()
+				.filter(trade -> !trade.isHasTradesReport() && !trade.isHasTradingViewData())
+				.toList();
+		if (manualTrades.isEmpty()) {
+			return 0;
+		}
+
+		Set<Long> manualTradeIds = manualTrades.stream().map(TradeEntity::getId).collect(Collectors.toSet());
+		Map<Long, List<TradeCloseEntity>> closesByTradeId = tradeCloses
+				.findAllByTradingAccountIdAndSource(account.getId(), "MANUAL").stream()
+				.filter(close -> manualTradeIds.contains(close.getTradeId()))
+				.collect(Collectors.groupingBy(TradeCloseEntity::getTradeId));
+		Map<DuplicateKey, List<Instant>> manualCloseTimes = new HashMap<>();
+		for (TradeEntity manualTrade : manualTrades) {
+			List<TradeCloseEntity> closes = closesByTradeId.get(manualTrade.getId());
+			if (closes == null || closes.size() != 1 || manualTrade.getOpenedVolume() == null) {
+				continue;
+			}
+			Instant closedAt = closes.getFirst().getClosedAt();
+			if (closedAt != null) {
+				DuplicateKey key = new DuplicateKey(
+						manualTrade.getSymbol(), manualTrade.getSide(), manualTrade.getOpenedVolume());
+				manualCloseTimes.computeIfAbsent(key, ignored -> new ArrayList<>()).add(closedAt);
+			}
+		}
+		Map<String, TradeSignature> reportTrades = reportRows.stream()
+				.collect(Collectors.groupingBy(
+						EightcapReportRow::ticket,
+						LinkedHashMap::new,
+						Collectors.collectingAndThen(Collectors.toList(), rows -> {
+							EightcapReportRow first = rows.getFirst();
+							BigDecimal volume = rows.stream()
+									.map(EightcapReportRow::volume)
+									.reduce(BigDecimal.ZERO, BigDecimal::add);
+							Instant closedAt = rows.stream()
+									.map(row -> toUtc(row.closeTime(), offsetMinutes))
+									.filter(java.util.Objects::nonNull)
+									.max(Instant::compareTo)
+									.orElse(null);
+							return new TradeSignature(first.symbol(), first.side(), volume, closedAt);
+						})));
+
+		return (int) reportTrades.values().stream()
+				.filter(reportTrade -> reportTrade.closedAt() != null)
+				.filter(reportTrade -> manualCloseTimes
+						.getOrDefault(
+								new DuplicateKey(reportTrade.symbol(), reportTrade.side(), reportTrade.volume()),
+								List.of())
+						.stream()
+						.anyMatch(manualClosedAt -> Duration.between(manualClosedAt, reportTrade.closedAt())
+								.abs()
+								.compareTo(POSSIBLE_DUPLICATE_WINDOW) <= 0))
+				.count();
 	}
 
 	private void validateRows(TradingAccountEntity account, List<EightcapReportRow> rows) {
@@ -491,7 +571,12 @@ public class EightcapImportService {
 	}
 
 	private List<ImportWarning> warnings(
-			int totalRows, int duplicateRows, boolean loginMismatch, boolean noExistingTradeOverlap) {
+			int totalRows,
+			int duplicateRows,
+			boolean loginMismatch,
+			boolean noExistingTradeOverlap,
+			int possibleManualTradeDuplicates,
+			int deletedTradeMatches) {
 		List<ImportWarning> warnings = new ArrayList<>();
 		if ((long) duplicateRows * 10 > totalRows) {
 			warnings.add(new ImportWarning(
@@ -502,6 +587,17 @@ public class EightcapImportService {
 			warnings.add(new ImportWarning(
 					"LOGIN_MISMATCH",
 					"The report login does not match this trading account. Confirm only if this report belongs here."));
+		}
+		if (possibleManualTradeDuplicates > 0) {
+			warnings.add(new ImportWarning(
+					"POSSIBLE_MANUAL_TRADE_DUPLICATE",
+					possibleManualTradeDuplicates
+							+ " report trades resemble manual trades without tickets by symbol, side, volume, and close time within 15 minutes. Review before importing."));
+		}
+		if (deletedTradeMatches > 0) {
+			warnings.add(new ImportWarning(
+					"DELETED_TRADES_MATCH",
+					deletedTradeMatches + " report trades match deleted trades by ticket. Import will not restore them."));
 		}
 		if (noExistingTradeOverlap) {
 			warnings.add(new ImportWarning(
@@ -533,6 +629,8 @@ public class EightcapImportService {
 			int alreadyImportedCashTransactions,
 			boolean loginMismatch,
 			boolean noExistingTradeOverlap,
+			int possibleManualTradeDuplicates,
+			int deletedTradeMatches,
 			Map<String, TradeEntity> existingTradeByTicket,
 			Set<String> existingCloseFingerprints,
 			Set<String> existingCashFingerprints) {
@@ -577,7 +675,19 @@ public class EightcapImportService {
 			boolean loginMismatch,
 			int cashRows,
 			int errorRows,
+			int possibleManualTradeDuplicates,
+			int deletedTradeMatches,
 			List<ImportWarning> warnings) {
+	}
+
+	private record TradeSignature(String symbol, String side, BigDecimal volume, Instant closedAt) {
+	}
+
+	private record DuplicateKey(String symbol, String side, BigDecimal volume) {
+
+		private DuplicateKey {
+			volume = volume.stripTrailingZeros();
+		}
 	}
 
 	public record ImportResult(

@@ -24,7 +24,7 @@ public class TradeManualRService {
 
 	@Transactional
 	public TradeEntity setManualR(Long tradeId, Long userId, BigDecimal rMultiple) {
-		TradeEntity trade = trades.findByIdAndUserId(tradeId, userId)
+		TradeEntity trade = trades.findByIdAndUserIdAndDeletedAtIsNull(tradeId, userId)
 				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Trade was not found."));
 		List<TradeCloseEntity> closes =
 				tradeCloses.findAllByTradingAccountIdAndTradeId(trade.getTradingAccountId(), trade.getId());

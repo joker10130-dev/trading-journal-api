@@ -2,7 +2,9 @@ package com.trading.journal.trade;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -130,6 +132,104 @@ class ManualTradeIntegrationTests extends JwtTestProperties {
 								""")
 						.with(user(otherUser)))
 				.andExpect(status().isNotFound());
+	}
+
+	@Test
+	void listsEditsDeletesAndRestoresOwnedTrades() throws Exception {
+		String email = "manual-trade-lifecycle@example.test";
+		long accountId = createAccount(email, "Lifecycle");
+		long tradeId = createManualTrade(accountId, email, "XAUUSD", "2026-09-01T10:00:00");
+		createManualTrade(accountId, email, "EURUSD", "2026-09-02T10:00:00");
+
+		mockMvc.perform(get("/api/v1/trading-accounts/{accountId}/trades", accountId)
+					.param("from", "2026-09-01")
+					.param("to", "2026-09-02")
+					.param("page", "0")
+					.param("size", "1")
+					.with(user(email)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.totalElements").value(2))
+			.andExpect(jsonPath("$.totalPages").value(2))
+			.andExpect(jsonPath("$.content[0].symbol").value("EURUSD"));
+
+		mockMvc.perform(get("/api/v1/trades/{tradeId}", tradeId).with(user(email)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.rSource").value("MANUAL"))
+			.andExpect(jsonPath("$.closes.length()").value(1))
+			.andExpect(jsonPath("$.closes[0].source").value("MANUAL"));
+
+		mockMvc.perform(put("/api/v1/trading-accounts/{accountId}/trades/{tradeId}", accountId, tradeId)
+					.contentType(MediaType.APPLICATION_JSON)
+					.content("""
+							{
+							  "ticket": "EDITED-1",
+							  "symbol": "BTCUSD",
+							  "side": "SHORT",
+							  "volume": 0.02,
+							  "openedAt": "2026-09-01T09:00:00",
+							  "closedAt": "2026-09-01T11:00:00",
+							  "openPrice": 44000,
+							  "closePrice": 43900,
+							  "profit": 12,
+							  "swaps": -1,
+							  "commission": -1,
+							  "rMultiple": -2
+							}
+							""")
+					.with(user(email)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.ticket").value("EDITED-1"))
+			.andExpect(jsonPath("$.netPnl").value(10))
+			.andExpect(jsonPath("$.rMultiple").value(-2));
+
+		mockMvc.perform(get("/api/v1/trading-accounts/summary").param("accountIds", Long.toString(accountId)).with(user(email)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.tradeCount").value(2))
+			.andExpect(jsonPath("$.netPnl").value(20));
+
+		mockMvc.perform(delete("/api/v1/trades/{tradeId}", tradeId).with(user(email)))
+			.andExpect(status().isNoContent());
+		mockMvc.perform(get("/api/v1/trades/{tradeId}", tradeId).with(user(email)))
+			.andExpect(status().isNotFound());
+		mockMvc.perform(get("/api/v1/trading-accounts/summary")
+					.param("accountIds", Long.toString(accountId)).with(user(email)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.tradeCount").value(1))
+			.andExpect(jsonPath("$.netPnl").value(10));
+		mockMvc.perform(get("/api/v1/trading-accounts/{accountId}/trades/deleted", accountId).with(user(email)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.totalElements").value(1))
+			.andExpect(jsonPath("$.content[0].deletedAt").isNotEmpty());
+
+		mockMvc.perform(put("/api/v1/trades/{tradeId}/restore", tradeId).with(user(email)))
+			.andExpect(status().isNoContent());
+		mockMvc.perform(get("/api/v1/trades/{tradeId}", tradeId).with(user(email)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.netPnl").value(10));
+	}
+
+	private long createManualTrade(long accountId, String email, String symbol, String closedAt) throws Exception {
+		MvcResult result = mockMvc.perform(post("/api/v1/trading-accounts/{accountId}/trades", accountId)
+					.contentType(MediaType.APPLICATION_JSON)
+					.content("""
+							{
+							  "symbol": "%s",
+							  "side": "LONG",
+							  "volume": 0.01,
+							  "openedAt": "2026-09-01T09:00:00",
+							  "closedAt": "%s",
+							  "openPrice": 4380,
+							  "closePrice": 4390,
+							  "profit": 12,
+							  "swaps": -1,
+							  "commission": -1,
+							  "rMultiple": 1.5
+							}
+							""".formatted(symbol, closedAt))
+					.with(user(email)))
+			.andExpect(status().isCreated())
+			.andReturn();
+		return objectMapper.readTree(result.getResponse().getContentAsByteArray()).path("id").asLong();
 	}
 
 	private long createAccount(String email, String name) throws Exception {
