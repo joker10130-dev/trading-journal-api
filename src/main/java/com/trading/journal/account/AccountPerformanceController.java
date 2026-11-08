@@ -30,13 +30,17 @@ public class AccountPerformanceController {
 	}
 
 	@GetMapping("/summary/performance")
-	public PerformanceSummary performance(@RequestParam(required = false) List<Long> accountIds) {
+	public PerformanceSummary performance(
+			@RequestParam(required = false) List<Long> accountIds,
+			@RequestParam(required = false) List<String> symbols) {
 		UserEntity user = currentUserService.requireCurrentUser();
 		List<Long> selectedAccountIds = validateAccountIds(user.getId(), accountIds);
-		String filter = accountFilter(selectedAccountIds);
+		List<String> selectedSymbols = normalizeSymbols(symbols);
 		List<Object> parameters = new ArrayList<>();
 		parameters.add(user.getId());
 		parameters.addAll(selectedAccountIds);
+		parameters.addAll(selectedSymbols);
+		String filter = filters(selectedAccountIds, selectedSymbols);
 
 		OverallTotal overall = jdbcClient.sql("""
 						select count(distinct c.trade_id) as trade_count,
@@ -116,21 +120,55 @@ public class AccountPerformanceController {
 
 	private List<Long> validateAccountIds(Long userId, List<Long> accountIds) {
 		if (accountIds == null || accountIds.isEmpty()) {
+			assertSingleCurrency(accounts.findAllByUserIdOrderById(userId));
 			return List.of();
 		}
 		List<Long> selected = accountIds.stream().distinct().toList();
-		if (accounts.findAllByIdInAndUserId(selected, userId).size() != selected.size()) {
+		List<TradingAccountEntity> owned = accounts.findAllByIdInAndUserId(selected, userId);
+		if (owned.size() != selected.size()) {
 			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "One or more trading accounts were not found.");
 		}
+		assertSingleCurrency(owned);
 		return selected;
 	}
 
-	private String accountFilter(List<Long> accountIds) {
-		if (accountIds.isEmpty()) {
-			return "";
+	private void assertSingleCurrency(List<TradingAccountEntity> selectedAccounts) {
+		if (selectedAccounts.stream().map(TradingAccountEntity::getCurrency).distinct().count() > 1) {
+			throw new ResponseStatusException(
+					HttpStatus.BAD_REQUEST, "Statistics cannot combine accounts with different currencies.");
 		}
+	}
+
+	private String accountFilter(List<Long> accountIds) {
 		return " and c.trading_account_id in (" + String.join(", ", java.util.Collections.nCopies(
 				accountIds.size(), "?")) + ") ";
+	}
+
+	private String filters(List<Long> accountIds, List<String> symbols) {
+		StringBuilder filter = new StringBuilder();
+		if (!accountIds.isEmpty()) {
+			filter.append(accountFilter(accountIds));
+		}
+		if (!symbols.isEmpty()) {
+			filter.append(" and t.symbol in (")
+					.append(String.join(", ", java.util.Collections.nCopies(symbols.size(), "?")))
+					.append(") ");
+		}
+		return filter.toString();
+	}
+
+	private List<String> normalizeSymbols(List<String> symbols) {
+		if (symbols == null || symbols.isEmpty()) {
+			return List.of();
+		}
+		List<String> selected = symbols.stream()
+				.map(symbol -> symbol == null ? "" : symbol.trim().toUpperCase(java.util.Locale.ROOT))
+				.distinct()
+				.toList();
+		if (selected.stream().anyMatch(symbol -> symbol.isBlank() || symbol.length() > 32)) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Symbols must contain 1 to 32 characters.");
+		}
+		return selected;
 	}
 
 	public record PerformanceSummary(

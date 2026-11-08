@@ -175,3 +175,22 @@ row data returns a conflict. Position IDs link to Eightcap tickets by their
 numeric suffix. Trades Report values and closes take precedence regardless of
 import order; TradingView-only positions retain each filled partial close.
 TradingView timestamps are interpreted as UTC+7.
+
+## Dashboard
+
+Dashboard statistics are available through
+`GET /api/v1/trading-accounts/summary/dashboard`. The `period` parameter accepts
+`THIS_MONTH`, `LAST_MONTH`, `LAST_QUARTER`, `LAST_YEAR`, or `ETERNAL`. Repeated
+`accountIds` and `symbols` parameters filter all dashboard statistics:
+
+```text
+GET /api/v1/trading-accounts/summary/dashboard?period=THIS_MONTH&accountIds=1&symbols=XAUUSD
+```
+
+Date ranges use the user's timezone. `LAST_QUARTER` means the trailing three
+months and `LAST_YEAR` means the trailing twelve months, both including today.
+Weeks start Monday; weekly totals include only selected dates inside each month.
+Accounts with different currencies cannot be combined. Net P&L, cumulative
+daily P&L, entered R, win/small/loss counts, daily streak, calendar totals and
+weekly totals all use the same account, symbol and period filters. Existing
+`/summary` and `/summary/performance` endpoints also accept `symbols`.
