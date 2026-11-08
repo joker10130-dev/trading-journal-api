@@ -126,6 +126,55 @@ class ManualTradeIntegrationTests extends JwtTestProperties {
 	}
 
 	@Test
+	void manualTradeWithoutRIsExcludedFromDailyAndMonthlyRTotals() throws Exception {
+		long accountId = createAccount(USER, "Manual without R");
+		MvcResult created = mockMvc.perform(post("/api/v1/trading-accounts/{accountId}/trades", accountId)
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("""
+								{
+								  "symbol": "XAUUSD",
+								  "side": "LONG",
+								  "volume": 0.01,
+								  "openedAt": "2026-09-01T09:00:00",
+								  "closedAt": "2026-09-01T10:00:00",
+								  "openPrice": 4380,
+								  "closePrice": 4390,
+								  "profit": 10,
+								  "swaps": 0,
+								  "commission": 0
+								}
+								""")
+						.with(user(USER)))
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.rMultiple").value(org.hamcrest.Matchers.nullValue()))
+				.andReturn();
+		long tradeId = objectMapper.readTree(created.getResponse().getContentAsByteArray()).path("id").asLong();
+
+		org.junit.jupiter.api.Assertions.assertEquals(
+				"NONE",
+				jdbcClient.sql("select r_source from trades where id = ?")
+						.param(tradeId)
+						.query(String.class)
+						.single());
+
+		mockMvc.perform(get("/api/v1/trading-accounts/summary/performance")
+						.param("accountIds", Long.toString(accountId))
+						.with(user(USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.tradesWithR").value(0))
+				.andExpect(jsonPath("$.tradesWithoutR").value(1))
+				.andExpect(jsonPath("$.totalR").value(0))
+				.andExpect(jsonPath("$.daily.length()").value(1))
+				.andExpect(jsonPath("$.daily[0].date").value("2026-09-01"))
+				.andExpect(jsonPath("$.daily[0].tradesWithR").value(0))
+				.andExpect(jsonPath("$.daily[0].totalR").value(0))
+				.andExpect(jsonPath("$.monthly.length()").value(1))
+				.andExpect(jsonPath("$.monthly[0].month").value("2026-09-01"))
+				.andExpect(jsonPath("$.monthly[0].tradesWithR").value(0))
+				.andExpect(jsonPath("$.monthly[0].totalR").value(0));
+	}
+
+	@Test
 	void rejectsOpenAndPartiallyClosedManualTrades() throws Exception {
 		long accountId = createAccount(USER, "Closed trades only");
 		String baseRequest = """
