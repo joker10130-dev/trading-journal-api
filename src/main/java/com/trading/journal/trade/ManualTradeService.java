@@ -105,6 +105,72 @@ public class ManualTradeService {
 				warnings(input, side));
 	}
 
+	@Transactional
+	public ManualTradeResult update(Long accountId, Long tradeId, UserEntity user, ManualTradeInput input) {
+		accounts.findByIdAndUserIdForUpdate(accountId, user.getId())
+				.orElseThrow(() -> new ResponseStatusException(
+						HttpStatus.NOT_FOUND, "Trading account was not found."));
+		TradeEntity trade = trades.findByIdAndTradingAccountIdAndUserIdAndDeletedAtIsNull(
+				tradeId, accountId, user.getId())
+				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Trade was not found."));
+		List<TradeCloseEntity> manualCloses = tradeCloses.findAllByTradingAccountIdAndTradeIdAndSource(
+				accountId, tradeId, "MANUAL");
+		if (manualCloses.size() != 1) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT, "Only closed manual trades can be edited.");
+		}
+
+		String ticket = normalizeTicket(input.ticket());
+		if (ticket != null && trades.existsByTradingAccountIdAndTicketAndIdNot(accountId, ticket, tradeId)) {
+			throw new ResponseStatusException(
+					HttpStatus.CONFLICT, "A trade with this ticket already exists in this trading account.");
+		}
+		String symbol = input.symbol().trim().toUpperCase(Locale.ROOT);
+		String side = input.side().toUpperCase(Locale.ROOT);
+		validateTimes(input.openedAt(), input.closedAt());
+		BigDecimal profit = normalizeMoney(input.profit(), "Profit");
+		BigDecimal swaps = normalizeMoney(input.swaps(), "Swaps");
+		BigDecimal commission = normalizeMoney(input.commission(), "Commission");
+		BigDecimal feesAndSwap = normalizeMoney(swaps.add(commission), "Fees and swap");
+		BigDecimal netPnl = normalizeMoney(profit.add(feesAndSwap), "Net P&L");
+		ZoneId userZone = ZoneId.of(user.getTimezone());
+		Instant openedAt = input.openedAt().atZone(userZone).toInstant();
+		Instant closedAt = input.closedAt().atZone(userZone).toInstant();
+		BigDecimal rMultiple = input.rMultiple() == null
+				? null
+				: input.rMultiple().setScale(R_SCALE, RoundingMode.HALF_UP);
+
+		trade.updateManualTrade(
+				ticket, symbol, side, openedAt, input.openPrice(), input.volume(), profit, feesAndSwap, netPnl);
+		if (rMultiple == null) {
+			trade.clearManualR();
+		} else {
+			trade.applyManualR(rMultiple);
+		}
+		TradeCloseEntity close = manualCloses.getFirst();
+		close.updateManualClose(
+				input.volume(), closedAt, input.closePrice(), profit, swaps, commission, netPnl);
+		close.updateRMultiple(rMultiple);
+		trade = trades.saveAndFlush(trade);
+
+		return new ManualTradeResult(
+				trade.getId(),
+				trade.getTicket(),
+				trade.getSymbol(),
+				trade.getSide(),
+				trade.getOpenedVolume(),
+				trade.getOpenedAt(),
+				closedAt,
+				trade.getOpenPrice(),
+				input.closePrice(),
+				trade.getGrossPnl(),
+				swaps,
+				commission,
+				trade.getNetPnl(),
+				trade.getRMultiple(),
+				trade.getRFlag(),
+				warnings(input, side));
+	}
+
 	private String normalizeTicket(String ticket) {
 		return ticket == null || ticket.isBlank() ? null : ticket.trim();
 	}

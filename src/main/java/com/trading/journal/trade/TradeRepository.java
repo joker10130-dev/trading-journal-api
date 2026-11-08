@@ -13,7 +13,18 @@ public interface TradeRepository extends JpaRepository<TradeEntity, Long> {
 
 	Optional<TradeEntity> findByIdAndUserId(Long id, Long userId);
 
+	Optional<TradeEntity> findByIdAndUserIdAndDeletedAtIsNull(Long id, Long userId);
+
+	Optional<TradeEntity> findByIdAndTradingAccountIdAndUserIdAndDeletedAtIsNull(
+			Long id,
+			Long tradingAccountId,
+			Long userId);
+
 	List<TradeEntity> findAllByTradingAccountId(Long tradingAccountId);
+
+	List<TradeEntity> findAllByTradingAccountIdAndTicketIsNullAndDeletedAtIsNull(Long tradingAccountId);
+
+	boolean existsByTradingAccountIdAndTicketAndIdNot(Long tradingAccountId, String ticket, Long id);
 
 	boolean existsByTradingAccountId(Long tradingAccountId);
 

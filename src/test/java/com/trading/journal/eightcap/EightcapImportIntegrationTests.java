@@ -1,6 +1,7 @@
 package com.trading.journal.eightcap;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -195,6 +196,67 @@ class EightcapImportIntegrationTests extends JwtTestProperties {
 		org.junit.jupiter.api.Assertions.assertEquals(10, aboveThresholdPreview.path("totalRows").asInt());
 		org.junit.jupiter.api.Assertions.assertEquals(2, aboveThresholdPreview.path("duplicateRows").asInt());
 		assertWarning(aboveThresholdPreview, "HIGH_DUPLICATE_RATE");
+	}
+
+	@Test
+	void previewWarnsAboutLikelyManualDuplicatesAndDeletedTicketMatches() throws Exception {
+		long accountId = createAccount("Duplicate and deleted matches", EightcapFixture.LOGIN, USER, (short) 420);
+		mockMvc.perform(post("/api/v1/trading-accounts/{accountId}/trades", accountId)
+						.contentType("application/json")
+						.content("""
+								{
+								  "symbol": "XAUUSD",
+								  "side": "LONG",
+								  "volume": 0.01,
+								  "openedAt": "2026-10-01T09:00:00",
+								  "closedAt": "2026-10-01T10:00:00",
+								  "openPrice": 100,
+								  "closePrice": 110,
+								  "profit": 10,
+								  "swaps": 0,
+								  "commission": 0
+								}
+								""")
+						.with(user(USER)))
+				.andExpect(status().isCreated());
+
+		List<String> reportRow = new ArrayList<>(eightcapTradeRow("DUPLICATE-MATCH", "10.00"));
+		reportRow.set(4, "0.01");
+		byte[] report = EightcapFixture.csvBytes(List.of(reportRow), false);
+		JsonNode duplicatePreview = preview(accountId, "manual-duplicate.csv", report);
+		org.junit.jupiter.api.Assertions.assertEquals(1, duplicatePreview.path("possibleManualTradeDuplicates").asInt());
+		org.junit.jupiter.api.Assertions.assertEquals(
+				"POSSIBLE_MANUAL_TRADE_DUPLICATE",
+				duplicatePreview.path("warnings").get(0).path("code").asString());
+		reportRow.set(9, "2026-10-01 10:16:00");
+		JsonNode outsideWindowPreview = preview(
+				accountId, "outside-duplicate-window.csv", EightcapFixture.csvBytes(List.of(reportRow), false));
+		org.junit.jupiter.api.Assertions.assertEquals(
+				0, outsideWindowPreview.path("possibleManualTradeDuplicates").asInt());
+		reportRow.set(9, "2026-10-01 10:00:00");
+		report = EightcapFixture.csvBytes(List.of(reportRow), false);
+
+		importFile(
+				accountId,
+				"manual-duplicate.csv",
+				report,
+				duplicatePreview.path("fileSha256").asString(),
+				false,
+				200);
+		long tradeId = jdbcClient.sql(
+						"select id from trades where trading_account_id = ? and ticket = 'DUPLICATE-MATCH'")
+				.param(accountId)
+				.query(Long.class)
+				.single();
+		mockMvc.perform(delete("/api/v1/trades/{tradeId}", tradeId).with(user(USER)))
+				.andExpect(status().isNoContent());
+
+		JsonNode deletedPreview = preview(accountId, "deleted-match.csv", report);
+		org.junit.jupiter.api.Assertions.assertEquals(1, deletedPreview.path("deletedTradeMatches").asInt());
+		org.junit.jupiter.api.Assertions.assertTrue(
+				java.util.stream.StreamSupport.stream(
+								deletedPreview.path("warnings").spliterator(), false)
+						.anyMatch(warning -> "DELETED_TRADES_MATCH".equals(warning.path("code").asString())));
 	}
 
 	@Test

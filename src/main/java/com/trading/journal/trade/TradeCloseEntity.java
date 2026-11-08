@@ -154,4 +154,21 @@ public class TradeCloseEntity {
 		this.rMultiple = rMultiple;
 	}
 
+	public void updateManualClose(
+			BigDecimal volume,
+			Instant closedAt,
+			BigDecimal closePrice,
+			BigDecimal grossPnl,
+			BigDecimal swaps,
+			BigDecimal commission,
+			BigDecimal netPnl) {
+		this.volume = volume;
+		this.closedAt = closedAt;
+		this.closePrice = closePrice;
+		this.grossPnl = grossPnl;
+		this.swaps = swaps;
+		this.commission = commission;
+		this.netPnl = netPnl;
+	}
+
 }
